@@ -18,6 +18,9 @@ on:
       stagger:
         description: "Spread the start of all processes over this many seconds (protects the portal's search page)"
         default: "120"
+      project:
+        description: "Hub project to use (leave empty for the real one; eprocure-eval for speed experiments)"
+        default: ""
       rescrape:
         description: "Fetch tenders again even if already stored (used for speed experiments on windows that are already done)"
         type: boolean
@@ -58,6 +61,7 @@ jobs:
         env:
           PROCS: ${{ inputs.procs }}
           STAGGER: ${{ inputs.stagger }}
+          SCRAPE_PROJECT: ${{ inputs.project }}
           TOTAL_JOBS: ${{ inputs.total_jobs }}
           JOB: ${{ matrix.job_index }}
           MAX_ITEMS: ${{ inputs.max_items }}

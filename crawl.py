@@ -29,7 +29,7 @@ import parsing  # noqa: E402
 import scrape_organization as so  # noqa: E402
 from plan import TENDERS  # noqa: E402
 
-PROJECT = TENDERS
+PROJECT = os.environ.get("SCRAPE_PROJECT") or TENDERS   # speed experiments use a separate project so they never touch the real data
 
 _seen = {}
 _seen_lock = threading.Lock()
@@ -242,6 +242,9 @@ def crawl_org(hub, item, args, deadline, gate):
     hub.note(f"{name[:48]} {frm}-{to}: {len(tenders)} tenders" + (f", {skipped} already stored" if skipped else "") + (f" (expected {expected})" if expected else ""))
     state = {"ok": 0, "failed": 0}
     pool = SessionPool()
+    # Every session costs a captcha (about 1.75 tries, ~3 s). A window with few tenders left must not open a session per thread:
+    # allow roughly one session per 4 tenders to fetch, so each session is reused several times.
+    sessions = threading.Semaphore(max(1, min(MAX_POOL, len(todo) // 4)))
 
     def one(t):
         if time.time() > deadline:
@@ -258,9 +261,10 @@ def crawl_org(hub, item, args, deadline, gate):
                         got += documents.download_documents(sess, status_docs) if args.documents else [(d, None, None, "not requested") for d in status_docs]
                 return got
 
-            (details, page0, page1, summary_html), fetched = fetch_pooled(
-                pool, gate, t.get("view_link"), t["tender_id"], after=collect, org_id=org_id,
-                output_dir=out_dir, from_date=frm, to_date=to)
+            with sessions:       # uploads and parsing below run outside it, so they overlap the next fetches
+                (details, page0, page1, summary_html), fetched = fetch_pooled(
+                    pool, gate, t.get("view_link"), t["tender_id"], after=collect, org_id=org_id,
+                    output_dir=out_dir, from_date=frm, to_date=to)
             if not details:
                 raise RuntimeError("no details parsed")
             details.pop("pdf_documents", None)
