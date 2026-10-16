@@ -136,6 +136,27 @@ Measured on the runners themselves (the first real timing data):
   meaningful: 4 processes at 8 threads each, documents on, compared with D's about 77/min per runner.
 - Only if B scales: the portal's total tolerance at 20 runners x several processes is untested.
 
+## Experiments B and B2 (more processes per runner, 2 runners, documents on, 600 tenders per process, same windows)
+| | Processes x threads | Total threads/runner | Tenders/min per runner | CPU (of 4 cores) | Connection errors | Errors / blocked |
+|---|---|---|---|---|---|---|
+| A | 1 x 4 | 4 | 31 | 11 to 13% of one core | 0 | 0 / 0 |
+| D | 1 x 16 | 16 | 77 | 54% of one core | 0 | 0 / 0 |
+| B | 4 x 8 | 32 | 146 to 162 (avg 154) | 23 to 27% | 0 | 0 / 0 |
+| B2 | 8 x 16 | 128 | 351 to 371 (avg 361) | 80 to 86% | 48 | 0 / 0 |
+
+### What this shows
+- **Throughput scales roughly linearly with total threads** (about 4.8, 4.8, 2.8 tenders/min per thread for D, B, B2) up to 128 threads
+  per runner. Processes are a convenient way to get there; a runner is not limited to one interpreter's ~140/min.
+- **B2 is near the runner's CPU limit** (80 to 86% of 4 cores). The phase timers inflate (parse 6.2 s per tender vs 0.24 s in B) from
+  waiting on the CPU, so thread-seconds at that load are not real costs. Per-thread yield fell in B2 for the same reason.
+- **The portal did not push back** (no 429/403/503; wait per request 768 ms vs 395 ms in B). Only 48 dropped connections (`http_error`)
+  across 31,762 requests, no failed tenders. Auto-backoff ignores `http_error`, so it would not have reacted; see backlog item 9.
+- Captcha first-try failure was 42% in B2 (413/975) vs 43% in B, so no degradation with load.
+- Portal-refused documents were 31% in B2 (8,049 of 26,125) vs 16% in B (2,009 of 12,744). Not yet explained; check whether refusal
+  depends on load before the full run (backlog item 10).
+- **Untested**: 20 runners at these settings. B2 x 20 would be about 7,200 tenders/min aggregate (about 2 hours for 895k). Ramp in
+  steps while watching `http_error`, 429 and captcha failure rates.
+
 ## Bugs found and fixed so far
 - Cancelled/Retender tenders returned no fields: the details link was the last `$DirectLink` on the status page (a signature pop-up).
   Same cause as the 8,818 empty rows in the September data (6,554 Cancelled + 2,264 Retender). Fixed, with the cancellation notice
@@ -157,6 +178,8 @@ Measured on the runners themselves (the first real timing data):
    Untested; earlier evidence is encouraging (detail links worked in a different session).
 6. Pipeline document downloads and uploads so they overlap the next tender's fetch.
 7. Captcha model accuracy (55 to 60% first try).
+9. Count `http_error` (dropped connections) in the hub's auto-backoff, and add a "stopped" run state so operator stops are not failures.
+10. Investigate why refused documents rose from 16% (B) to 31% (B2); decide whether to retry them later at lower load.
 8. Done: skip tenders already stored when a window is retried or resumed (`--rescrape` overrides).
 
 ## Experiments to run before the next big run
