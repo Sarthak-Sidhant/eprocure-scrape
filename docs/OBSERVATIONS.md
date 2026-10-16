@@ -36,11 +36,44 @@ Result at the stop: **30,424 tenders stored**, 18 windows finished, about 65,000
 - Raising threads therefore added captcha sessions (more start-up work per window) without adding throughput.
 
 ### NOT verified (do not treat as fact)
-1. That runners are CPU-bound. GitHub runner CPU count and utilisation were never measured. A per-IP rate limit on the portal that is
+1. (Refuted by experiment A: runners use about 3% of their cores.) That runners are CPU-bound. GitHub runner CPU count and utilisation were never measured. A per-IP rate limit on the portal that is
    silent (no 429) would look the same and was not ruled out.
 2. That 4 processes per runner scales (the code exists; it was started and stopped within a minute, no data).
 3. The split of time per phase on a runner (list pages, fetch, parse, documents, upload, hub calls). Nothing is timed yet.
 4. That a GitHub-hosted runner has 4 cores (documentation says so for public repos; not checked in a run).
+
+## Experiment A (2026-10-16, 13:06): 2 runners, 1 process each, 4 threads, capped, instrumented
+
+Measured on the runners themselves (the first real timing data):
+
+| Per process | Slice 0 | Slice 1 |
+|---|---|---|
+| Tenders per minute over its life | 33 | 32 |
+| CPU used | 12% of one core (3% of the runner's 4 cores) | 13% (3%) |
+| Seconds per tender, summed over threads: fetching the three pages | 1.45 | 1.02 |
+| ...of that, waiting on the portal (about 3.3 requests, 380 to 414 ms each) | 1.38 | 1.22 |
+| ...downloading documents (about 3 per tender) | **6.25** | **5.16** |
+| ...uploading pages and documents to R2 (hub link + PUTs) | **3.45** | **2.27** |
+| ...parsing (September parser, link and document search) | 0.04 | 0.04 |
+| ...listing the window | 0.16 | 0.32 |
+| ...waiting for a free thread slot | 33 | 36 |
+
+### What this changes
+- **The CPU-bound hypothesis is wrong.** The runner is almost idle. Parsing is negligible (0.04 s). Several processes per runner would
+  not help; that change (still in the code) should be kept only if a later test shows a gain, and can default to 1.
+- **Documents and uploads are about 85% of the time per tender** (about 8 to 9 of about 10 thread-seconds). Each tender downloads
+  about 3 documents one after another, about 1.8 s each, then uploads about 4 objects one after another.
+- Threads were queuing for a slot (33 to 36 thread-seconds of waiting per tender), so the thread limit was binding at 4. In run 1,
+  16 threads still gave about 100 tenders/min per runner. If concurrency were the only limit, 16 threads would have helped, so there
+  is probably a throughput ceiling per runner on the portal side or in the network: at 100 tenders/min x about 3 documents x about
+  0.5 MB that is about 2.4 MB/s per runner. **Not yet verified.**
+- The second window of each process ran at about 18 tenders/min against about 100 for the first. Cause unknown; compare windows.
+
+### Next experiments (in order)
+- **C: documents off** (same windows, caps and threads). If the rate jumps several times, documents are the bottleneck and the plan is
+  a metadata pass first, with documents as a separate lower-priority pass. Run first because it is the cheapest decisive test.
+- **D: documents on, 16 threads, 1 process**, to separate "more concurrency" from "a ceiling per runner".
+- Only then decide on pipelining downloads/uploads, parallel downloads inside a tender, or two passes.
 
 ## Bugs found and fixed so far
 - Cancelled/Retender tenders returned no fields: the details link was the last `$DirectLink` on the status page (a signature pop-up).
