@@ -75,6 +75,31 @@ Measured on the runners themselves (the first real timing data):
 - **D: documents on, 16 threads, 1 process**, to separate "more concurrency" from "a ceiling per runner".
 - Only then decide on pipelining downloads/uploads, parallel downloads inside a tender, or two passes.
 
+## Experiment C (2026-10-16, 13:28): same as A but documents OFF
+
+| Per process | Slice 0 | Slice 1 | (A, documents on) |
+|---|---|---|---|
+| Tenders per minute | **133** | **106** | 31 and 30 |
+| Time for 600 tenders | 4.5 min | 5.7 min | 19.6 and 19.9 min |
+| CPU | 60% of one core (15% of the 4 cores) | 43% (11%) | 11 to 13% |
+| Fetching pages (s per tender) | 1.08 | 1.05 | 1.4 and 1.0 |
+| Uploading (s per tender) | 1.11 | 0.99 | 3.5 and 2.6 |
+| Parse timer (s per tender, includes waiting for the GIL) | 0.27 | 0.20 | 0.04 |
+
+### What this shows
+- **Documents cost about 75% of the time**: dropping them makes a process **3.9x faster** (30.5 -> 119.5 tenders/min on average).
+- **Uploading pages alone still costs about 1 s per tender** (a hub call plus one PUT): worth batching or moving to a background pool.
+- **CPU now matters.** With documents off a process uses 43 to 60% of one core, and the parse timer rose from 0.04 s to 0.2 to 0.27 s
+  per tender, which is threads queueing for the interpreter lock. A single Python process would saturate at roughly 200 to 250
+  tenders/min. So in metadata-only mode, **more processes per runner (or more cores in use) can help**; in documents-on mode they cannot.
+  This refines the experiment A conclusion: the limit moves from "documents" to "one Python process" once documents are out of the way.
+- The pause between windows is visible again (a minute near 25 tenders at the window boundary).
+
+### Plan this supports (estimates, to verify)
+- **Two passes:** pass 1 metadata only (pages + parsed fields), pass 2 documents separately. At about 120/min/process and one
+  process per runner, 20 runners do about 2,400/min, so 895k tenders take about 6 hours; with more threads or processes, less.
+- Open questions for the next tests: does throughput scale with threads (D) and with processes (metadata-only B)?
+
 ## Bugs found and fixed so far
 - Cancelled/Retender tenders returned no fields: the details link was the last `$DirectLink` on the status page (a signature pop-up).
   Same cause as the 8,818 empty rows in the September data (6,554 Cancelled + 2,264 Retender). Fixed, with the cancellation notice
