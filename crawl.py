@@ -32,7 +32,7 @@ PROJECT = TENDERS
 _seen = {}
 _seen_lock = threading.Lock()
 
-MAX_POOL = 16  # worker threads we can ever use; the hub's `threads` setting decides how many run at once
+MAX_POOL = 32  # worker threads we can ever use; the hub's `threads` setting decides how many run at once
 
 
 class Gate:
