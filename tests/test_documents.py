@@ -118,3 +118,29 @@ def test_download_documents_separates_good_files_portal_refusals_and_errors():
     assert v1["ok"] and c1.startswith(b"%PDF") and e1 is None
     assert v2["ok"] is False and v2["reason"] == documents.PORTAL_ERROR and e2 is None   # refused by the portal: a verdict, not an exception
     assert v3 is None and c3 is None and "TimeoutError" in e3
+
+
+class RecordingHub:
+    def __init__(self):
+        self.failures, self.cleared = [], []
+
+    def failure(self, kind, key, reason="", **detail):
+        self.failures.append((kind, key, reason, detail))
+
+    def clear_failure(self, kind, key):
+        self.cleared.append((kind, key))
+
+
+def test_document_outcomes_go_to_the_failures_list_and_successes_clear_old_failures():
+    import crawl
+    hub = RecordingHub()
+    entries = [{"name": "ok.pdf", "kind": "document", "declared_bytes": 10, "status": "stored"},
+               {"name": "bad.pdf", "kind": "evaluation_summary", "declared_bytes": 99, "status": "refused", "reason": documents.PORTAL_ERROR},
+               {"name": "err.pdf", "kind": "document", "declared_bytes": None, "status": "failed", "reason": "TimeoutError: slow"},
+               {"name": "skip.pdf", "kind": "document", "declared_bytes": None, "status": "not_stored", "reason": "not requested"}]
+    crawl.report_document_outcomes(hub, "2019_X_1", "223", "DRDO", ["01/01/2019", "31/12/2019"], entries)
+    assert hub.cleared == [("document", "2019_X_1/ok.pdf")]
+    assert [(k, key) for k, key, _, _ in hub.failures] == [("document", "2019_X_1/bad.pdf"), ("document", "2019_X_1/err.pdf")]
+    kind, key, reason, detail = hub.failures[0]
+    assert reason == documents.PORTAL_ERROR and detail["org_name"] == "DRDO" and detail["window"] == ["01/01/2019", "31/12/2019"] and detail["declared_bytes"] == 99
+    assert len(documents.PORTAL_ERROR) < 110                                   # fits the dashboard's reason column without being cut

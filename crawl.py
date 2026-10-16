@@ -98,6 +98,17 @@ def fetch_pooled(pool, gate, view_link, tender_id, after=None, **kw):
                 pool.give(sess)
 
 
+def report_document_outcomes(hub, tender_id, org_id, org_name, window, entries):
+    """Refused or failed documents go to the hub's failures list; a document that is stored now clears any earlier failure."""
+    for e in entries:
+        key = f"{tender_id}/{e['name']}"
+        if e["status"] == "stored":
+            hub.clear_failure("document", key)
+        elif e["status"] in ("refused", "failed"):
+            hub.failure("document", key, e.get("reason") or e["status"], org_id=org_id, org_name=org_name, window=window,
+                        document=e["name"], doc_kind=e["kind"], declared_bytes=e["declared_bytes"])
+
+
 def obey_hub(hub, gate):
     """Apply the dashboard's speed settings: pause while asked to, resize the gate, and space requests out."""
     while hub.settings.get("paused"):
@@ -229,11 +240,13 @@ def crawl_org(hub, item, args, deadline, gate):
             for e in entries:
                 e.pop("_path", None)
             details["documents"] = entries
+            report_document_outcomes(hub, t["tender_id"], org_id, name, [frm, to], entries)
             hub.record(t["tender_id"], {"org_id": org_id, "org_name": name, "window": [frm, to], "list": t, "details": details})
             state["ok"] += 1
-        except Exception:
+        except Exception as exc:
             state["failed"] += 1
             hub.error()
+            hub.failure("tender", t["tender_id"], f"{type(exc).__name__}: {str(exc)[:200]}", org_id=org_id, org_name=name, window=[frm, to])
         sync_metrics(hub)
 
     with ThreadPoolExecutor(max_workers=MAX_POOL) as ex:

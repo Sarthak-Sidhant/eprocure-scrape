@@ -142,8 +142,7 @@ def pages_bundle(status_html, details_html, summary_html):
     return gzip.compress(json.dumps({"status": status_html, "details": details_html, "summary": summary_html}).encode("utf-8"), 6)
 
 
-PORTAL_ERROR = ("the portal's download service failed for this file (it redirects to its generic error page, which says 'session "
-                "expired'; a real browser gets the same page, so it is not something the scraper can fix)")
+PORTAL_ERROR = "portal file service error: generic 'session expired' page, same in a real browser (not a scraper problem)"
 
 
 def download_documents(session, docs, timeout=90):
