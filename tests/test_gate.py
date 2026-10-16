@@ -65,3 +65,49 @@ def test_obey_hub_spaces_requests_by_delay():
     t0 = time.time()
     crawl.obey_hub(FakeHub(delay_ms=300), crawl.Gate(2))
     assert time.time() - t0 >= 0.29
+
+
+def test_sessions_are_bounded_by_the_gate_not_the_thread_count(monkeypatch):
+    """16 worker threads at a gate of 4 must create about 4 sessions (4 captchas), not 16."""
+    created = []
+
+    def fake_fetch(view_link, tender_id, **kw):          # mimics the scraper's per-thread session handling
+        sess = crawl.so.thread_local.session
+        if sess is None:
+            sess = object()
+            created.append(sess)                          # a new session == a captcha solved
+        crawl.so.thread_local.session = sess
+        time.sleep(0.02)
+        return {"ok": tender_id}, "", "", ""
+
+    monkeypatch.setattr(crawl.so, "fetch_tender_details", fake_fetch)
+    pool, gate = crawl.SessionPool(), crawl.Gate(4)
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=16) as ex:
+        results = list(ex.map(lambda i: crawl.fetch_pooled(pool, gate, "u", str(i)), range(80)))
+    assert len(results) == 80
+    assert len(created) <= 4, f"{len(created)} sessions created"
+
+
+def test_a_session_that_raised_is_not_reused(monkeypatch):
+    seen = []
+
+    def fake_fetch(view_link, tender_id, **kw):
+        sess = crawl.so.thread_local.session or object()
+        crawl.so.thread_local.session = sess
+        seen.append(sess)
+        if tender_id == "boom":
+            raise RuntimeError("expired")
+        return {}, "", "", ""
+
+    monkeypatch.setattr(crawl.so, "fetch_tender_details", fake_fetch)
+    pool, gate = crawl.SessionPool(), crawl.Gate(1)
+    crawl.fetch_pooled(pool, gate, "u", "a")
+    good = seen[0]
+    try:
+        crawl.fetch_pooled(pool, gate, "u", "boom")
+    except RuntimeError:
+        pass
+    assert pool.free == []                                # the broken session was dropped
+    crawl.fetch_pooled(pool, gate, "u", "c")
+    assert len(pool.free) == 1 and pool.free[0] is not good      # "c" got a fresh session, not the broken one

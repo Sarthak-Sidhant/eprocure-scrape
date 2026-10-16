@@ -56,6 +56,42 @@ class Gate:
             self.cv.notify_all()
 
 
+class SessionPool:
+    """Authenticated portal sessions for one organisation, shared by the worker threads.
+
+    The scraper normally keeps one session per *thread*, and each new session costs a captcha. With a 16-thread pool that
+    meant up to 16 captchas per organisation whatever the speed setting. Borrowing from this pool keeps the number of
+    sessions at the number actually in use at once (the gate's limit), and each is reused for many tenders.
+    """
+
+    def __init__(self):
+        self.free, self.lock, self.created = [], threading.Lock(), 0
+
+    def take(self):
+        with self.lock:
+            return self.free.pop() if self.free else None
+
+    def give(self, session):
+        if session is not None:
+            with self.lock:
+                self.free.append(session)
+
+
+def fetch_pooled(pool, gate, view_link, tender_id, **kw):
+    """fetch_tender_details through a borrowed session; a new one (one captcha) is only made when none is free."""
+    with gate:
+        so.thread_local.session = pool.take()      # None makes the scraper authenticate a fresh session
+        ok = False
+        try:
+            out = so.fetch_tender_details(view_link, tender_id, **kw)
+            ok = True
+            return out
+        finally:
+            sess, so.thread_local.session = getattr(so.thread_local, "session", None), None
+            if ok:                                  # a session that raised may be broken, so it is dropped, not reused
+                pool.give(sess)
+
+
 def obey_hub(hub, gate):
     """Apply the dashboard's speed settings: pause while asked to, resize the gate, and space requests out."""
     while hub.settings.get("paused"):
@@ -138,6 +174,7 @@ def crawl_org(hub, item, args, deadline, gate):
             return "failed", f"portal listed 0 of {expected} expected tenders", 0
     hub.note(f"{name[:60]}: {len(tenders)} tenders" + (f" (expected {expected})" if expected else ""))
     state = {"ok": 0, "failed": 0}
+    pool = SessionPool()
 
     def one(t):
         if time.time() > deadline:
@@ -145,9 +182,8 @@ def crawl_org(hub, item, args, deadline, gate):
             return
         obey_hub(hub, gate)
         try:
-            with gate:
-                details, *_ = so.fetch_tender_details(t.get("view_link"), t["tender_id"], org_id=org_id,
-                                                      output_dir=out_dir, from_date=FROM_DATE, to_date=TO_DATE)
+            details, *_ = fetch_pooled(pool, gate, t.get("view_link"), t["tender_id"], org_id=org_id,
+                                       output_dir=out_dir, from_date=FROM_DATE, to_date=TO_DATE)
             if not details:
                 raise RuntimeError("no details parsed")
             hub.record(t["tender_id"], {"org_id": org_id, "org_name": name, "list": t, "details": details})
