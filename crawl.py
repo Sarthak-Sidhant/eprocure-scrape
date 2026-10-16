@@ -23,6 +23,7 @@ from scrape_hub_client import HubClient  # noqa: E402
 
 import documents  # noqa: E402
 import orgs as orgs_mod  # noqa: E402
+import parsing  # noqa: E402
 import scrape_organization as so  # noqa: E402
 from plan import TENDERS  # noqa: E402
 
@@ -230,6 +231,16 @@ def crawl_org(hub, item, args, deadline, gate):
                     e.update(status="not_stored" if err == "not requested" else "failed", reason=err)
                     so.bump("doc_failed" if err != "not requested" else "doc_skipped")
                 entries.append(e)
+            try:   # the structured fields (the September parser's output); a parse problem must not lose the tender, the raw pages are stored
+                dj = {**details, "stage": t.get("stage"), "sno": t.get("sno"), "view_link": t.get("view_link"), "tender_id": t["tender_id"]}
+                names = [f"{t['tender_id']}_{e['name']}" for e in entries]
+                fields, proc, outcomes = parsing.parse_tender(t["tender_id"], org_id, name, dj, page0, page1, summary_html, names)
+                outcomes.pop("bids_list", None)                       # already stored once, as details["bids"]
+                details["fields"], details["procurement_details"], details["outcomes"] = fields, proc, outcomes
+                hub.clear_failure("parse", t["tender_id"])
+            except Exception as pe:
+                details["parse_error"] = f"{type(pe).__name__}: {str(pe)[:200]}"
+                hub.failure("parse", t["tender_id"], details["parse_error"], org_id=org_id, org_name=name, window=[frm, to])
             if files:
                 done = {u["path"]: u for u in hub.upload_many(files)}   # raises if an upload keeps failing, which fails this tender so it is retried
                 if args.store:
