@@ -99,6 +99,19 @@ def fetch_pooled(pool, gate, view_link, tender_id, after=None, **kw):
                 pool.give(sess)
 
 
+def not_yet_stored(hub, tenders, rescrape=False):
+    """(tenders still to fetch, how many were skipped). A tender already stored with parsed fields is not fetched again, so a
+    retried or resumed window only does what is missing. If the hub cannot answer, everything is fetched (safe, just slower)."""
+    if rescrape or not tenders:
+        return tenders, 0
+    try:
+        known = set(hub.known([t["tender_id"] for t in tenders]))
+    except Exception:
+        return tenders, 0
+    todo = [t for t in tenders if t["tender_id"] not in known]
+    return todo, len(tenders) - len(todo)
+
+
 def report_document_outcomes(hub, tender_id, org_id, org_name, window, entries):
     """Refused or failed documents go to the hub's failures list; a document that is stored now clears any earlier failure."""
     for e in entries:
@@ -193,7 +206,10 @@ def crawl_org(hub, item, args, deadline, gate):
         hub.block()
         if not tenders:
             return "failed", f"portal listed 0 of {expected} expected tenders", 0
-    hub.note(f"{name[:48]} {frm}-{to}: {len(tenders)} tenders" + (f" (expected {expected})" if expected else ""))
+    todo, skipped = not_yet_stored(hub, tenders, args.rescrape)
+    if skipped:
+        so.bump("skipped_known", skipped)
+    hub.note(f"{name[:48]} {frm}-{to}: {len(tenders)} tenders" + (f", {skipped} already stored" if skipped else "") + (f" (expected {expected})" if expected else ""))
     state = {"ok": 0, "failed": 0}
     pool = SessionPool()
 
@@ -265,13 +281,13 @@ def crawl_org(hub, item, args, deadline, gate):
         sync_metrics(hub)
 
     with ThreadPoolExecutor(max_workers=MAX_POOL) as ex:
-        list(ex.map(one, tenders))
+        list(ex.map(one, todo))
     hub.flush()
     if state["failed"]:
-        return "failed", f"{state['failed']} of {len(tenders)} tender pages failed", state["ok"]
+        return "failed", f"{state['failed']} of {len(todo)} tender pages failed", state["ok"] + skipped
     if short:
-        return "done", f"listed {len(tenders)} of {expected} expected", state["ok"]
-    return "done", "", state["ok"]
+        return "done", f"listed {len(tenders)} of {expected} expected", state["ok"] + skipped
+    return "done", "", state["ok"] + skipped
 
 
 def main():
@@ -281,6 +297,7 @@ def main():
     ap.add_argument("--threads", type=int, default=4, help="starting threads per runner; the dashboard setting overrides it")
     ap.add_argument("--retries", type=int, default=10)
     ap.add_argument("--max-tenders", type=int, default=0, help="cap tenders per org (smoke tests)")
+    ap.add_argument("--rescrape", action="store_true", help="fetch every tender again even if it is already stored (e.g. after the parser changed)")
     ap.add_argument("--documents", action=argparse.BooleanOptionalAction, default=True, help="download each tender's documents")
     ap.add_argument("--store", action=argparse.BooleanOptionalAction, default=True, help="upload raw pages and documents to object storage")
     ap.add_argument("--max-items", type=int, default=0, help="stop after this many windows (smoke tests)")

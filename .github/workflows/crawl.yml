@@ -12,6 +12,9 @@ on:
       max_tenders:
         description: "Cap tenders per window (0 = no limit; use 5-60 for a smoke test)"
         default: "0"
+      procs:
+        description: "Crawler processes per runner. One Python process tops out near 100-350 tenders/min (it is CPU-bound); a runner has 4 cores."
+        default: "4"
       documents:
         description: "Also download each tender's documents (PDF reports, BOQ) and store them in R2. The raw pages are always stored."
         type: boolean
@@ -45,8 +48,21 @@ jobs:
           pip install torch --index-url https://download.pytorch.org/whl/cpu
       - name: Scrape windows
         if: ${{ matrix.job_index < fromJSON(inputs.total_jobs) }}
-        run: >
-          python crawl.py
-          --job-index ${{ matrix.job_index }} --total-jobs ${{ inputs.total_jobs }}
-          --max-items ${{ inputs.max_items }} --max-tenders ${{ inputs.max_tenders }}
-          ${{ inputs.documents && '--documents' || '--no-documents' }}
+        env:
+          PROCS: ${{ inputs.procs }}
+          TOTAL_JOBS: ${{ inputs.total_jobs }}
+          JOB: ${{ matrix.job_index }}
+          MAX_ITEMS: ${{ inputs.max_items }}
+          MAX_TENDERS: ${{ inputs.max_tenders }}
+          DOCS: ${{ inputs.documents && '--documents' || '--no-documents' }}
+        run: |
+          # PROCS independent crawler processes per runner, each with its own slice number and its own run on the hub
+          pids=()
+          for p in $(seq 0 $((PROCS - 1))); do
+            python crawl.py --job-index $((JOB * PROCS + p)) --total-jobs $((TOTAL_JOBS * PROCS)) \
+              --max-items "$MAX_ITEMS" --max-tenders "$MAX_TENDERS" $DOCS &
+            pids+=($!)
+          done
+          fail=0
+          for pid in "${pids[@]}"; do wait "$pid" || fail=1; done
+          exit $fail

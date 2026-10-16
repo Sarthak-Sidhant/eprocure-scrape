@@ -133,3 +133,26 @@ def test_fetch_pooled_runs_the_after_callback_on_the_live_session_inside_the_gat
     assert out[3] == "p2" and extra == ["downloaded"] and order == ["fetch", "after"]
     assert sessions[0][0] is not None and sessions[0][1] == 1                      # live session, still holding the gate
     assert len(pool.free) == 1                                                      # and the session went back to the pool afterwards
+
+
+class KnownHub:
+    def __init__(self, known=None, boom=False):
+        self.known_ids, self.boom = known or [], boom
+
+    def known(self, ids):
+        if self.boom:
+            raise RuntimeError("hub down")
+        return [i for i in ids if i in self.known_ids]
+
+
+def test_tenders_already_stored_are_skipped_and_the_rest_fetched():
+    ts = [{"tender_id": f"T{i}"} for i in range(5)]
+    todo, skipped = crawl.not_yet_stored(KnownHub(["T1", "T3"]), ts)
+    assert [t["tender_id"] for t in todo] == ["T0", "T2", "T4"] and skipped == 2
+
+
+def test_rescrape_fetches_everything_and_a_hub_error_never_loses_work():
+    ts = [{"tender_id": f"T{i}"} for i in range(3)]
+    assert crawl.not_yet_stored(KnownHub(["T0"]), ts, rescrape=True) == (ts, 0)
+    assert crawl.not_yet_stored(KnownHub(boom=True), ts) == (ts, 0)               # cannot ask: fetch all, safe
+    assert crawl.not_yet_stored(KnownHub(), []) == ([], 0)
