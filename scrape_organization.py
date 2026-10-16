@@ -396,6 +396,18 @@ def find_detail_links(status_html):
     return page1, page2
 
 
+class PortalSessionExpired(RuntimeError):
+    pass
+
+
+def _must_not_be_expired(res, view_link):
+    """The portal's 'session expired' page has no tender data. Storing it as the tender would look like a success (2026-10-16:
+    thousands of empty records), so a page that is still expired after a fresh login fails the tender and it is retried later."""
+    if b'session in the client area has expired' in res.content.lower():
+        bump("expired_after_relogin")
+        raise PortalSessionExpired(f"portal still says 'session expired' after a fresh login ({view_link[-40:]})")
+
+
 def fetch_tender_details(view_link, tender_id, org_id='684', output_dir=None, from_date="", to_date=""):
     """
     Visits Page 0 (Tender Status), then visits:
@@ -414,6 +426,7 @@ def fetch_tender_details(view_link, tender_id, org_id='684', output_dir=None, fr
         session = renew_thread_session(org_id=org_id, output_dir=output_dir, from_date=from_date, to_date=to_date)
         res0 = safe_request(session, 'GET', view_link)
 
+    _must_not_be_expired(res0, view_link)
     html_page0 = res0.text
     soup0 = BeautifulSoup(html_page0, 'html.parser')
 
@@ -435,6 +448,7 @@ def fetch_tender_details(view_link, tender_id, org_id='684', output_dir=None, fr
         session = renew_thread_session(org_id=org_id, output_dir=output_dir, from_date=from_date, to_date=to_date)
         safe_request(session, 'GET', view_link)
         res1 = safe_request(session, 'GET', link_page1)
+    _must_not_be_expired(res1, view_link)
     html_page1 = res1.text
     soup1 = BeautifulSoup(html_page1, 'html.parser')
 
@@ -444,6 +458,7 @@ def fetch_tender_details(view_link, tender_id, org_id='684', output_dir=None, fr
         session = renew_thread_session(org_id=org_id, output_dir=output_dir, from_date=from_date, to_date=to_date)
         safe_request(session, 'GET', view_link)
         res2 = safe_request(session, 'GET', link_page2)
+    _must_not_be_expired(res2, view_link)
     html_page2 = res2.text
     soup2 = BeautifulSoup(html_page2, 'html.parser')
 
