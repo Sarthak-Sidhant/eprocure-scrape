@@ -157,6 +157,18 @@ Measured on the runners themselves (the first real timing data):
 - **Untested**: 20 runners at these settings. B2 x 20 would be about 7,200 tenders/min aggregate (about 2 hours for 895k). Ramp in
   steps while watching `http_error`, 429 and captcha failure rates.
 
+### Refused documents are not load-related (experiment E, 2026-10-16)
+Same two windows, 120 tenders, documents on, `--rescrape`, 1 runner x 1 process: **1 thread** stored 230 / refused 159, **16 threads**
+stored 230 / refused 159 (identical). So the portal's "session expired" refusal is a property of the document, not of load or
+concurrency. The B (16%) vs B2 (31%) difference is the windows each process happened to reach. Failures table: 20,674 of 20,681
+document failures are this refusal; by kind: evaluation_summary 13,773, BOQ comparative chart 2,992, other documents 2,606, status
+documents 1,309; concentrated in older windows (2011 to 2019). A real browser gets the same page. Nothing to fix; retrying is
+pointless (attempts 2 to 5 in the table all still fail).
+
+Hub changes made before the 6k/min attempt: auto-backoff now also halves threads when dropped connections in 3 min are at least 20 and
+exceed half the records stored; hub runs 4 uvicorn workers (was 1) with a DB pool of 20 each, because 160 processes will report at
+about 100 tenders/s.
+
 ## Bugs found and fixed so far
 - Cancelled/Retender tenders returned no fields: the details link was the last `$DirectLink` on the status page (a signature pop-up).
   Same cause as the 8,818 empty rows in the September data (6,554 Cancelled + 2,264 Retender). Fixed, with the cancellation notice
@@ -178,8 +190,8 @@ Measured on the runners themselves (the first real timing data):
    Untested; earlier evidence is encouraging (detail links worked in a different session).
 6. Pipeline document downloads and uploads so they overlap the next tender's fetch.
 7. Captcha model accuracy (55 to 60% first try).
-9. Count `http_error` (dropped connections) in the hub's auto-backoff, and add a "stopped" run state so operator stops are not failures.
-10. Investigate why refused documents rose from 16% (B) to 31% (B2); decide whether to retry them later at lower load.
+9. Done: `http_error` counted in auto-backoff. Still to do: add a "stopped" run state so operator stops are not failures.
+10. Done: refusals are deterministic per document (experiment E), no action.
 8. Done: skip tenders already stored when a window is retried or resumed (`--rescrape` overrides).
 
 ## Experiments to run before the next big run
