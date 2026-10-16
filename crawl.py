@@ -21,6 +21,7 @@ import requests  # noqa: E402
 from requests.adapters import HTTPAdapter  # noqa: E402
 from scrape_hub_client import HubClient  # noqa: E402
 
+import documents  # noqa: E402
 import orgs as orgs_mod  # noqa: E402
 import scrape_organization as so  # noqa: E402
 from plan import TENDERS  # noqa: E402
@@ -185,10 +186,11 @@ def crawl_org(hub, item, args, deadline, gate):
             return
         obey_hub(hub, gate)
         try:
-            details, *_ = fetch_pooled(pool, gate, t.get("view_link"), t["tender_id"], org_id=org_id,
-                                       output_dir=out_dir, from_date=frm, to_date=to)
+            details, _page0, _page1, summary_html = fetch_pooled(pool, gate, t.get("view_link"), t["tender_id"], org_id=org_id,
+                                                                 output_dir=out_dir, from_date=frm, to_date=to)
             if not details:
                 raise RuntimeError("no details parsed")
+            documents.attach_documents(details, summary_html)
             hub.record(t["tender_id"], {"org_id": org_id, "org_name": name, "window": [frm, to], "list": t, "details": details})
             state["ok"] += 1
         except Exception:
