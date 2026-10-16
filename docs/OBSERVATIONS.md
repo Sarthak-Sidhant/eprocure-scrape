@@ -169,6 +169,17 @@ Hub changes made before the 6k/min attempt: auto-backoff now also halves threads
 exceed half the records stored; hub runs 4 uvicorn workers (was 1) with a DB pool of 20 each, because 160 processes will report at
 about 100 tenders/s.
 
+### First 6k/min attempt failed (2026-10-16 14:52, run 38903566352) and the fixes
+20 runners x 8 processes x 32 threads, all starting together. In 14 minutes **zero tenders were stored**; 13 windows failed with "search
+failed after 5 attempts". Runner logs show the portal's search page timing out (ReadTimeout at 25 s) and returning pages without a
+search form, while the portal answered a single request from the hub host in 2.4 s. So the weak point at that scale is the search/listing
+step, not document downloads. Cancelled by the operator; queue reset (176 items back to pending). Not yet known: whether the cause is
+total simultaneous searches (160) or per-IP limits; the ramp below measures it.
+Changes: (1) documents inside one tender download 4 at a time (verified: the same 230 stored / 159 refused on the 120-tender test, docs
+6.5 -> 4.6 thread-s, 49 -> 60 tenders/min at 16 threads); (2) 64 worker threads for a gate of at most 32, so uploads and parsing no longer
+occupy gated slots; (3) `--stagger` spreads process start-up (workflow input `stagger`, default 120 s); (4) a 10 to 30 s pause before the
+retry when a search returns nothing. Ramp plan: procs=2 (40 processes), then add more only while tenders keep arriving.
+
 ## Bugs found and fixed so far
 - Cancelled/Retender tenders returned no fields: the details link was the last `$DirectLink` on the status page (a signature pop-up).
   Same cause as the 8,818 empty rows in the September data (6,554 Cancelled + 2,264 Retender). Fixed, with the cancellation notice
