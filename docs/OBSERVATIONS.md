@@ -100,6 +100,42 @@ Measured on the runners themselves (the first real timing data):
   process per runner, 20 runners do about 2,400/min, so 895k tenders take about 6 hours; with more threads or processes, less.
 - Open questions for the next tests: does throughput scale with threads (D) and with processes (metadata-only B)?
 
+## Experiment D (2026-10-16, 13:35): same as A but 16 threads (documents ON)
+
+| Per process | Slice 0 | Slice 1 | (A, 4 threads) |
+|---|---|---|---|
+| Tenders per minute | **79** | **75** | 31 and 30 |
+| Time for 600 tenders | 7.6 min | 8.0 min | 19.6 and 19.9 min |
+| CPU | 54% of one core (13% of the 4 cores) | 51% (13%) | 11 to 13% |
+| Documents (s per tender, summed over threads) | 6.6 | 6.1 | 6.7 and 5.8 |
+| Uploading (s per tender) | 3.6 | 3.1 | 3.5 and 2.6 |
+| Portal wait per request | 369 ms | 482 ms | 406 and 366 ms |
+| Portal pushback (429/403/503/connection errors) | none | none | none |
+| Errors / blocked | 0 / 0 | 0 / 0 | 0 / 0 |
+
+### What this shows
+- **Threads do help with documents on**: 16 threads gave **2.5x** the rate (about 31 -> 77 tenders/min per process). Time per document did not
+  grow (still about 1.8 s), so documents are limited by concurrency here, not by a bandwidth ceiling at this level.
+- **No portal pushback at all** at 16 threads (portal wait per request 369 to 482 ms, similar to before).
+- This **does not match run 1**, where raising 4 -> 16 threads mid-run changed nothing per active runner. Run 1 is confounded: threads were
+  raised during the run, half the runners were idle at window boundaries, and each new window needs 16 fresh sessions. Treat run 1's
+  "no change" as unreliable, not as evidence of a ceiling.
+- **CPU per tender is about 0.4 s with documents on** (247 s CPU / 600 tenders), higher than the 0.17 s parsing benchmark: TLS for the
+  document bytes, hashing, gzip, JSON and the captcha model add up. At 16 threads one process uses about 54% of a core and the parse
+  timer inflates (0.5 to 1.2 s) from waiting on the interpreter lock, so **a single process saturates at roughly 140 tenders/min**.
+
+### Summary of A, C, D (per process, 600 tenders each, the same windows)
+| | Documents | Threads | Tenders/min | CPU of one core |
+|---|---|---|---|---|
+| A | on | 4 | 30 to 31 | 11 to 13% |
+| C | off | 4 | 106 to 133 | 43 to 60% |
+| D | on | 16 | 75 to 79 | 51 to 54% |
+
+### Open
+- Does throughput scale further with **more processes** (each has its own interpreter lock and a runner has 4 cores)? **Experiment B**, now
+  meaningful: 4 processes at 8 threads each, documents on, compared with D's about 77/min per runner.
+- Only if B scales: the portal's total tolerance at 20 runners x several processes is untested.
+
 ## Bugs found and fixed so far
 - Cancelled/Retender tenders returned no fields: the details link was the last `$DirectLink` on the status page (a signature pop-up).
   Same cause as the 8,818 empty rows in the September data (6,554 Cancelled + 2,264 Retender). Fixed, with the cancellation notice
