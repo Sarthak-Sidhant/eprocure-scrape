@@ -144,3 +144,28 @@ def test_document_outcomes_go_to_the_failures_list_and_successes_clear_old_failu
     kind, key, reason, detail = hub.failures[0]
     assert reason == documents.PORTAL_ERROR and detail["org_name"] == "DRDO" and detail["window"] == ["01/01/2019", "31/12/2019"] and detail["declared_bytes"] == 99
     assert len(documents.PORTAL_ERROR) < 110                                   # fits the dashboard's reason column without being cut
+
+
+STATUS_FIX = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
+
+
+def test_a_cancelled_tenders_status_page_yields_its_notice_and_not_the_signature_icon():
+    html = open(os.path.join(STATUS_FIX, "status_cancelled_2024_DOP_809543_1.html"), encoding="utf-8", errors="ignore").read()
+    docs = documents.extract_status_documents(html)
+    assert [(d["name"], d["kind"]) for d in docs] == [("Tender Cancelled corrigendum document", "status_document")]
+
+
+def test_a_normal_status_page_has_no_status_documents():
+    html = open(os.path.join(STATUS_FIX, "pages", "2021_NTA_628462_1", "status.html"), encoding="utf-8", errors="ignore").read()
+    assert documents.extract_status_documents(html) == []
+
+
+def test_details_link_is_the_exact_view_more_details_link_even_when_extra_links_follow():
+    import scrape_organization as so
+    cancelled = open(os.path.join(STATUS_FIX, "status_cancelled_2024_DOP_809543_1.html"), encoding="utf-8", errors="ignore").read()
+    p1, p2 = so.find_detail_links(cancelled)
+    assert "component=%24DirectLink&" in p1 and "component=%24DirectLink_0&" in p2           # not _1 (View Document) or _2 (signature)
+    normal = open(os.path.join(STATUS_FIX, "pages", "2021_NTA_628462_1", "status.html"), encoding="utf-8", errors="ignore").read()
+    n1, n2 = so.find_detail_links(normal)
+    assert "component=%24DirectLink&" in n1 and "component=%24DirectLink_0&" in n2
+    assert so.find_detail_links("<html></html>") == (None, None)

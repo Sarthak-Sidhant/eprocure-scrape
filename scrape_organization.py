@@ -368,6 +368,27 @@ def parse_results_page(html):
     return tenders, next_url
 
 
+def find_detail_links(status_html):
+    """The status page's links to the tender-details page ($DirectLink) and the stage-summary page ($DirectLink_0).
+
+    A Cancelled or Retender tender's status page has further links after these (a 'View Document' notice, then a digital-signature
+    icon, $DirectLink_1 and _2). Taking the last $DirectLink-ish link, as this used to, picked the signature pop-up instead of the
+    details page, so those tenders came back with no fields (8,818 of them in the September data). Only the exact components count.
+    """
+    page1 = page2 = None
+    for a in BeautifulSoup(status_html, 'html.parser').find_all('a', href=True):
+        href = a['href']
+        if 'page=WebTenderStatus&' not in href:
+            continue
+        m = re.search(r'component=([^&]+)', href)
+        comp = urllib.parse.unquote(m.group(1)) if m else ''
+        if comp == '$DirectLink_0' and page2 is None:
+            page2 = href
+        elif comp == '$DirectLink' and page1 is None:
+            page1 = href
+    return page1, page2
+
+
 def fetch_tender_details(view_link, tender_id, org_id='684', output_dir=None, from_date="", to_date=""):
     """
     Visits Page 0 (Tender Status), then visits:
@@ -390,15 +411,7 @@ def fetch_tender_details(view_link, tender_id, org_id='684', output_dir=None, fr
     soup0 = BeautifulSoup(html_page0, 'html.parser')
 
     # 2. Find links to Page 1 and Page 2 on Page 0
-    link_page1 = None
-    link_page2 = None
-    for a in soup0.find_all('a', href=True):
-        href_val = a['href']
-        if 'page=WebTenderStatus' in href_val:
-            if 'component=%24DirectLink_0' in href_val or 'component=$DirectLink_0' in href_val:
-                link_page2 = href_val
-            elif 'component=%24DirectLink' in href_val or 'component=$DirectLink' in href_val:
-                link_page1 = href_val
+    link_page1, link_page2 = find_detail_links(html_page0)
 
     # Fallback to standard DirectLink endpoints if not found
     if not link_page1:

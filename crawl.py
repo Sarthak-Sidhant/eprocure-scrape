@@ -205,7 +205,11 @@ def crawl_org(hub, item, args, deadline, gate):
         try:
             def collect(sess, out):
                 docs = documents.extract_documents(out[3])
-                return documents.download_documents(sess, docs) if args.documents else [(d, None, None, "not requested") for d in docs]
+                got = documents.download_documents(sess, docs) if args.documents else [(d, None, None, "not requested") for d in docs]
+                if documents.extract_status_documents(out[1]):      # e.g. a cancellation notice, linked from the status page
+                    status_docs = documents.extract_status_documents(sess.get(t.get("view_link"), timeout=60).text)   # reload that page: its links only work there
+                    got += documents.download_documents(sess, status_docs) if args.documents else [(d, None, None, "not requested") for d in status_docs]
+                return got
 
             (details, page0, page1, summary_html), fetched = fetch_pooled(
                 pool, gate, t.get("view_link"), t["tender_id"], after=collect, org_id=org_id,

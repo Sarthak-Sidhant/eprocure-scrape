@@ -55,6 +55,33 @@ def extract_documents(summary_html):
     return out
 
 
+def extract_status_documents(status_html):
+    """Documents linked from the STATUS page itself, e.g. a cancelled tender's 'Tender Cancelled corrigendum document - View Document'.
+
+    Returns [{name, kind: 'status_document', url, declared_bytes: None}]. These links only work while the session is on the status
+    page, so the caller must load that page again right before downloading them.
+    """
+    soup = BeautifulSoup(status_html or "", "html.parser")
+    out, seen = [], set()
+    for a in soup.find_all("a", href=True):
+        href = a["href"].replace("&amp;", "&")
+        if "page=WebTenderStatus&" not in href or a.get_text(" ", strip=True).lower() != "view document":
+            continue
+        if a.find("img", src=re.compile("certificate", re.I)):
+            continue
+        comp = urllib.parse.unquote((re.search(r"component=([^&]+)", href) or [None, ""])[1])
+        if not re.fullmatch(r"\$DirectLink_\d+", comp) or comp == "$DirectLink_0":
+            continue
+        url = urllib.parse.urljoin(BASE, href)
+        if url in seen:
+            continue
+        seen.add(url)
+        row = a.find_parent("tr")
+        label = re.sub(r"\s*-?\s*View Document\s*$", "", re.sub(r"\s+", " ", row.get_text(" ", strip=True) if row else "")).strip(" -:")
+        out.append({"name": label or "status_document", "kind": "status_document", "url": url, "declared_bytes": None})
+    return out
+
+
 def sniff(content):
     """What the bytes really are: pdf, xlsx, docx, zip, xls/doc (OLE), html, image or unknown."""
     head = content[:1024]
