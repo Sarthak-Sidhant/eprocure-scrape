@@ -223,7 +223,15 @@ def main():
     gate = Gate(args.threads)
     done = 0
     try:
-        while time.time() < deadline and not (args.max_items and done >= args.max_items):
+        if args.max_tenders:
+            # Smoke test: a capped window is only partly scraped, so it must not be marked done. Take the windows in one
+            # claim, scrape them, and hand them back to the queue untouched for the real run.
+            items = hub.claim(args.max_items or 1, steal=True)
+            for item in items:
+                status, error, fetched = crawl_org(hub, item, args, deadline, gate)
+                hub.complete([item["key"]], "pending", error=f"capped test run ({status}); left for the full scrape", fetched=fetched)
+                done += 1
+        while not args.max_tenders and time.time() < deadline and not (args.max_items and done >= args.max_items):
             items = hub.claim(1, steal=True)
             if hub.settings.get("paused"):
                 time.sleep(5)          # paused from the dashboard: hold, keep the heartbeat alive, then ask again
