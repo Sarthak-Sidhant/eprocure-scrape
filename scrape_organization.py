@@ -298,6 +298,7 @@ def get_thread_session(org_id='684', output_dir=None, from_date="", to_date=""):
             'Accept-Language': 'en-US,en;q=0.5',
         })
 
+        bump("sessions_new")
         print(f"[*] Thread {threading.current_thread().name} initializing session and solving captcha...")
         fetch_search_page(session, org_id=org_id, output_dir=output_dir, from_date=from_date, to_date=to_date)
         thread_local.session = session
@@ -308,6 +309,7 @@ def renew_thread_session(org_id='684', output_dir=None, from_date="", to_date=""
     """
     Forces re-authentication of the thread's session when expired.
     """
+    bump("sessions_renewed")      # the portal said 'session expired' mid-tender
     thread_local.session = None
     return get_thread_session(org_id=org_id, output_dir=output_dir, from_date=from_date, to_date=to_date)
 
