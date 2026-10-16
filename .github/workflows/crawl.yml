@@ -15,6 +15,10 @@ on:
       procs:
         description: "Crawler processes per runner. One Python process tops out near 100-350 tenders/min (it is CPU-bound); a runner has 4 cores."
         default: "4"
+      rescrape:
+        description: "Fetch tenders again even if already stored (used for speed experiments on windows that are already done)"
+        type: boolean
+        default: false
       documents:
         description: "Also download each tender's documents (PDF reports, BOQ) and store them in R2. The raw pages are always stored."
         type: boolean
@@ -55,12 +59,13 @@ jobs:
           MAX_ITEMS: ${{ inputs.max_items }}
           MAX_TENDERS: ${{ inputs.max_tenders }}
           DOCS: ${{ inputs.documents && '--documents' || '--no-documents' }}
+          RESCRAPE: ${{ inputs.rescrape && '--rescrape' || '' }}
         run: |
           # PROCS independent crawler processes per runner, each with its own slice number and its own run on the hub
           pids=()
           for p in $(seq 0 $((PROCS - 1))); do
             python crawl.py --job-index $((JOB * PROCS + p)) --total-jobs $((TOTAL_JOBS * PROCS)) \
-              --max-items "$MAX_ITEMS" --max-tenders "$MAX_TENDERS" $DOCS &
+              --max-items "$MAX_ITEMS" --max-tenders "$MAX_TENDERS" $DOCS $RESCRAPE &
             pids+=($!)
           done
           fail=0

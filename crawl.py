@@ -6,6 +6,7 @@ fetches the status/details/summary pages for each, and uploads one record per te
 are not downloaded; the metadata and links are stored in the record.
 """
 import argparse
+import contextlib
 import os
 import sys
 import tempfile
@@ -35,6 +36,16 @@ _seen_lock = threading.Lock()
 MAX_POOL = 32  # worker threads we can ever use; the hub's `threads` setting decides how many run at once
 
 
+@contextlib.contextmanager
+def timed(name):
+    """Add the seconds spent in the block to the metric t_<name>_s (thread-seconds: threads that overlap each add their own time)."""
+    t = time.perf_counter()
+    try:
+        yield
+    finally:
+        so.bump(f"t_{name}_s", time.perf_counter() - t)
+
+
 class Gate:
     """A concurrency limit that can be raised or lowered while work is running."""
 
@@ -47,10 +58,12 @@ class Gate:
             self.cv.notify_all()
 
     def __enter__(self):
+        t = time.perf_counter()
         with self.cv:
             while self.active >= self.limit:
                 self.cv.wait(1.0)
             self.active += 1
+        so.bump("t_gate_wait_s", time.perf_counter() - t)      # time a thread waited for a free slot
 
     def __exit__(self, *exc):
         with self.cv:
@@ -89,7 +102,8 @@ def fetch_pooled(pool, gate, view_link, tender_id, after=None, **kw):
         so.thread_local.session = pool.take()      # None makes the scraper authenticate a fresh session
         ok = False
         try:
-            out = so.fetch_tender_details(view_link, tender_id, **kw)
+            with timed("fetch"):
+                out = so.fetch_tender_details(view_link, tender_id, **kw)
             extra = after(so.thread_local.session, out) if after else None
             ok = True
             return (out, extra) if after else out
@@ -133,8 +147,12 @@ def obey_hub(hub, gate):
         time.sleep(delay / 1000)
 
 
+_last_cpu = [time.process_time(), time.perf_counter(), False]
+
+
 def sync_metrics(hub):
-    """Move the scraper's counters (captcha_ok, http_429, ...) to the hub as deltas since the last call."""
+    """Move the scraper's counters (captcha_ok, t_fetch_s, ...) to the hub as deltas since the last call, plus this process's
+    CPU seconds, wall seconds and core count (cpu_s / wall_s / cores = how busy the runner's cores are)."""
     with so._metrics_lock:
         snap = dict(so.METRICS)
     with _seen_lock:
@@ -143,6 +161,13 @@ def sync_metrics(hub):
             if d:
                 hub.metric(k, d)
                 _seen[k] = v
+        cpu, wall = time.process_time(), time.perf_counter()
+        hub.metric("cpu_s", cpu - _last_cpu[0])
+        hub.metric("wall_s", wall - _last_cpu[1])
+        _last_cpu[0], _last_cpu[1] = cpu, wall
+        if not _last_cpu[2]:
+            hub.metric("cores", os.cpu_count() or 0)
+            _last_cpu[2] = True
 
 
 def list_tenders(org_id, out_dir, max_tenders, retries, from_date, to_date):
@@ -193,7 +218,8 @@ def crawl_org(hub, item, args, deadline, gate):
     tenders = []
     for _attempt in range(2):  # an empty result for a populated org can be a transient block; retry on a fresh session
         try:
-            tenders = list_tenders(org_id, out_dir, args.max_tenders, args.retries, frm, to)
+            with timed("list"):
+                tenders = list_tenders(org_id, out_dir, args.max_tenders, args.retries, frm, to)
         except Exception as e:
             hub.block()
             sync_metrics(hub)
@@ -220,11 +246,12 @@ def crawl_org(hub, item, args, deadline, gate):
         obey_hub(hub, gate)
         try:
             def collect(sess, out):
-                docs = documents.extract_documents(out[3])
-                got = documents.download_documents(sess, docs) if args.documents else [(d, None, None, "not requested") for d in docs]
-                if documents.extract_status_documents(out[1]):      # e.g. a cancellation notice, linked from the status page
-                    status_docs = documents.extract_status_documents(sess.get(t.get("view_link"), timeout=60).text)   # reload that page: its links only work there
-                    got += documents.download_documents(sess, status_docs) if args.documents else [(d, None, None, "not requested") for d in status_docs]
+                with timed("docs"):
+                    docs = documents.extract_documents(out[3])
+                    got = documents.download_documents(sess, docs) if args.documents else [(d, None, None, "not requested") for d in docs]
+                    if documents.extract_status_documents(out[1]):      # e.g. a cancellation notice, linked from the status page
+                        status_docs = documents.extract_status_documents(sess.get(t.get("view_link"), timeout=60).text)   # reload that page: its links only work there
+                        got += documents.download_documents(sess, status_docs) if args.documents else [(d, None, None, "not requested") for d in status_docs]
                 return got
 
             (details, page0, page1, summary_html), fetched = fetch_pooled(
@@ -251,6 +278,7 @@ def crawl_org(hub, item, args, deadline, gate):
                     e.update(status="not_stored" if err == "not requested" else "failed", reason=err)
                     so.bump("doc_failed" if err != "not requested" else "doc_skipped")
                 entries.append(e)
+            _t_parse = time.perf_counter()
             try:   # the structured fields (the September parser's output); a parse problem must not lose the tender, the raw pages are stored
                 dj = {**details, "stage": t.get("stage"), "sno": t.get("sno"), "view_link": t.get("view_link"), "tender_id": t["tender_id"]}
                 names = [f"{t['tender_id']}_{e['name']}" for e in entries]
@@ -261,8 +289,11 @@ def crawl_org(hub, item, args, deadline, gate):
             except Exception as pe:
                 details["parse_error"] = f"{type(pe).__name__}: {str(pe)[:200]}"
                 hub.failure("parse", t["tender_id"], details["parse_error"], org_id=org_id, org_name=name, window=[frm, to])
+            so.bump("t_parse_s", time.perf_counter() - _t_parse)
             if files:
-                done = {u["path"]: u for u in hub.upload_many(files)}   # raises if an upload keeps failing, which fails this tender so it is retried
+                with timed("upload"):
+                    uploaded = hub.upload_many(files)
+                done = {u["path"]: u for u in uploaded}   # raises if an upload keeps failing, which fails this tender so it is retried
                 if args.store:
                     details["pages_key"] = done[f"pages/{prefix}.json.gz"]["key"]
                 for e in entries:
@@ -274,6 +305,7 @@ def crawl_org(hub, item, args, deadline, gate):
             report_document_outcomes(hub, t["tender_id"], org_id, name, [frm, to], entries)
             hub.record(t["tender_id"], {"org_id": org_id, "org_name": name, "window": [frm, to], "list": t, "details": details})
             state["ok"] += 1
+            so.bump("n_tenders")
         except Exception as exc:
             state["failed"] += 1
             hub.error()

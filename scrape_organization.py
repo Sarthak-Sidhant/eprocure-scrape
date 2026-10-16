@@ -61,10 +61,12 @@ def safe_request(session, method, url, max_retries=5, backoff=2.0, **kwargs):
     kwargs.setdefault('timeout', 25)
     for attempt in range(max_retries):
         try:
-            if method.upper() == 'GET':
-                res = session.get(url, **kwargs)
-            else:
-                res = session.post(url, **kwargs)
+            t_http = time.perf_counter()
+            try:
+                res = session.get(url, **kwargs) if method.upper() == 'GET' else session.post(url, **kwargs)
+            finally:
+                bump("t_http_s", time.perf_counter() - t_http)   # time waiting on the portal, per request
+                bump("n_http")
             if res.status_code == 200:
                 return res
             bump(f"http_{res.status_code}")
@@ -114,7 +116,10 @@ def solve_captcha(session, captcha_b64, output_dir=None):
         # 1. Automatic CNN solver
         if captcha_solver:
             try:
+                t_cnn = time.perf_counter()
                 captcha_val, conf = captcha_solver.solve_captcha(img_data)
+                bump("t_captcha_cnn_s", time.perf_counter() - t_cnn)   # CPU time of the captcha model
+                bump("n_captcha_cnn")
                 print(f"[+] Solved captcha automatically via CNN: {captcha_val} (confidence: {conf:.2f})")
                 return captcha_val
             except Exception as e:

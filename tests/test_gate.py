@@ -156,3 +156,57 @@ def test_rescrape_fetches_everything_and_a_hub_error_never_loses_work():
     assert crawl.not_yet_stored(KnownHub(["T0"]), ts, rescrape=True) == (ts, 0)
     assert crawl.not_yet_stored(KnownHub(boom=True), ts) == (ts, 0)               # cannot ask: fetch all, safe
     assert crawl.not_yet_stored(KnownHub(), []) == ([], 0)
+
+
+def test_timed_adds_seconds_to_the_phase_metric():
+    before = crawl.so.METRICS.get("t_unit_test_s", 0)
+    with crawl.timed("unit_test"):
+        time.sleep(0.05)
+    assert crawl.so.METRICS["t_unit_test_s"] - before >= 0.049
+
+
+def test_waiting_for_a_gate_slot_is_measured():
+    g = crawl.Gate(1)
+    before = crawl.so.METRICS.get("t_gate_wait_s", 0)
+    started = threading.Event()
+
+    def hold():
+        with g:
+            started.set()
+            time.sleep(0.2)
+    t = threading.Thread(target=hold); t.start(); started.wait()
+    with g:
+        pass
+    t.join()
+    assert crawl.so.METRICS["t_gate_wait_s"] - before >= 0.15
+
+
+def test_sync_metrics_reports_cpu_wall_and_cores_once(monkeypatch):
+    class H:
+        def __init__(self):
+            self.m = {}
+
+        def metric(self, k, v=1):
+            self.m[k] = self.m.get(k, 0) + v
+    crawl._last_cpu[:] = [time.process_time(), time.perf_counter(), False]
+    sum(i * i for i in range(300000))
+    time.sleep(0.05)
+    h = H()
+    crawl.sync_metrics(h)
+    assert h.m["cpu_s"] > 0 and h.m["wall_s"] >= 0.05 and h.m["cores"] >= 1
+    h2 = H()
+    crawl.sync_metrics(h2)
+    assert "cores" not in h2.m                                                       # sent only the first time
+
+
+def test_safe_request_counts_requests_and_portal_wait(monkeypatch):
+    class R:
+        status_code = 200
+
+    class S:
+        def get(self, url, **kw):
+            time.sleep(0.03)
+            return R()
+    n0, t0 = crawl.so.METRICS.get("n_http", 0), crawl.so.METRICS.get("t_http_s", 0)
+    crawl.so.safe_request(S(), "GET", "https://x")
+    assert crawl.so.METRICS["n_http"] - n0 == 1 and crawl.so.METRICS["t_http_s"] - t0 >= 0.029
