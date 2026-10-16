@@ -78,3 +78,41 @@ def test_attach_documents_replaces_the_old_list_and_keeps_no_dead_urls():
     assert [d["name"] for d in out["documents"]] == ["Cor.pdf", "techsummary_385179.pdf"]
     assert all("url" not in d for d in out["documents"])           # session-bound URLs are useless once the session ends
     assert out["Tender ID"] == "x"
+
+
+def test_paths_are_safe_and_organised_by_year_org_tender():
+    assert documents.tender_prefix("2018_NTA_366797_1", 684) == "2018/684/2018_NTA_366797_1"
+    assert documents.tender_prefix("weird id", "a b") == "unknown/a_b/weird_id"
+    assert documents.safe_part("Corrigendum 3 (final).pdf") == "Corrigendum_3_final_.pdf"
+    assert documents.safe_part("../../etc/passwd") == "etc_passwd" and documents.safe_part("") == "file"
+
+
+def test_pages_bundle_round_trips_all_three_pages():
+    import gzip, json
+    b = documents.pages_bundle("<s/>", "<d>é</d>", "<m/>")
+    assert json.loads(gzip.decompress(b)) == {"status": "<s/>", "details": "<d>é</d>", "summary": "<m/>"}
+
+
+class FakeSession:
+    def __init__(self, bodies):
+        self.bodies = bodies
+
+    def get(self, url, timeout=0):
+        v = self.bodies[url]
+        if isinstance(v, Exception):
+            raise v
+
+        class R:
+            content = v
+        return R
+
+
+def test_download_documents_separates_good_files_portal_refusals_and_errors():
+    docs = [{"name": "a.pdf", "url": "u1", "declared_bytes": None}, {"name": "b.pdf", "url": "u2", "declared_bytes": None},
+            {"name": "c.pdf", "url": "u3", "declared_bytes": None}]
+    refusal = b"<html><body>Your session in the client area has expired.</body></html>"
+    out = documents.download_documents(FakeSession({"u1": b"%PDF-1.4 " + b"x" * 50, "u2": refusal, "u3": TimeoutError("slow")}), docs)
+    (d1, c1, v1, e1), (d2, c2, v2, e2), (d3, c3, v3, e3) = out
+    assert v1["ok"] and c1.startswith(b"%PDF") and e1 is None
+    assert v2["ok"] is False and "html" in v2["reason"] and e2 is None            # refused by the portal: a verdict, not an exception
+    assert v3 is None and c3 is None and "TimeoutError" in e3

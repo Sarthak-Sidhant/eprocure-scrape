@@ -78,15 +78,20 @@ class SessionPool:
                 self.free.append(session)
 
 
-def fetch_pooled(pool, gate, view_link, tender_id, **kw):
-    """fetch_tender_details through a borrowed session; a new one (one captcha) is only made when none is free."""
+def fetch_pooled(pool, gate, view_link, tender_id, after=None, **kw):
+    """fetch_tender_details through a borrowed session; a new one (one captcha) is only made when none is free.
+
+    `after(session, out)` runs inside the gate on the same live session, right after the pages were loaded (this is when a
+    document link still works). The call then returns (out, after_result) instead of just out.
+    """
     with gate:
         so.thread_local.session = pool.take()      # None makes the scraper authenticate a fresh session
         ok = False
         try:
             out = so.fetch_tender_details(view_link, tender_id, **kw)
+            extra = after(so.thread_local.session, out) if after else None
             ok = True
-            return out
+            return (out, extra) if after else out
         finally:
             sess, so.thread_local.session = getattr(so.thread_local, "session", None), None
             if ok:                                  # a session that raised may be broken, so it is dropped, not reused
@@ -186,11 +191,44 @@ def crawl_org(hub, item, args, deadline, gate):
             return
         obey_hub(hub, gate)
         try:
-            details, _page0, _page1, summary_html = fetch_pooled(pool, gate, t.get("view_link"), t["tender_id"], org_id=org_id,
-                                                                 output_dir=out_dir, from_date=frm, to_date=to)
+            def collect(sess, out):
+                docs = documents.extract_documents(out[3])
+                return documents.download_documents(sess, docs) if args.documents else [(d, None, None, "not requested") for d in docs]
+
+            (details, page0, page1, summary_html), fetched = fetch_pooled(
+                pool, gate, t.get("view_link"), t["tender_id"], after=collect, org_id=org_id,
+                output_dir=out_dir, from_date=frm, to_date=to)
             if not details:
                 raise RuntimeError("no details parsed")
-            documents.attach_documents(details, summary_html)
+            details.pop("pdf_documents", None)
+            prefix = documents.tender_prefix(t["tender_id"], org_id)
+            files, entries = [], []
+            if args.store:
+                files.append((f"pages/{prefix}.json.gz", documents.pages_bundle(page0, page1, summary_html), "application/gzip"))
+            for d, content, v, err in fetched:
+                e = {"name": d["name"], "kind": d["kind"], "declared_bytes": d["declared_bytes"]}
+                if v and v["ok"] and args.store:
+                    path = f"docs/{prefix}/{documents.safe_part(v['filename'])}"
+                    files.append((path, content, documents.MIME.get(v["content_type"], "application/octet-stream")))
+                    e.update(status="stored", content_type=v["content_type"], bytes=v["bytes"], sha256=v["sha256"], size_ok=v["size_ok"], _path=path)
+                    so.bump("doc_stored")
+                elif v:
+                    e.update(status="refused", reason=v["reason"] or "portal did not return the document")
+                    so.bump("doc_refused")
+                else:
+                    e.update(status="not_stored" if err == "not requested" else "failed", reason=err)
+                    so.bump("doc_failed" if err != "not requested" else "doc_skipped")
+                entries.append(e)
+            if files:
+                done = {u["path"]: u for u in hub.upload_many(files)}   # raises if an upload keeps failing, which fails this tender so it is retried
+                if args.store:
+                    details["pages_key"] = done[f"pages/{prefix}.json.gz"]["key"]
+                for e in entries:
+                    if e.get("_path"):
+                        e["key"] = done[e["_path"]]["key"]
+            for e in entries:
+                e.pop("_path", None)
+            details["documents"] = entries
             hub.record(t["tender_id"], {"org_id": org_id, "org_name": name, "window": [frm, to], "list": t, "details": details})
             state["ok"] += 1
         except Exception:
@@ -215,6 +253,8 @@ def main():
     ap.add_argument("--threads", type=int, default=4, help="starting threads per runner; the dashboard setting overrides it")
     ap.add_argument("--retries", type=int, default=10)
     ap.add_argument("--max-tenders", type=int, default=0, help="cap tenders per org (smoke tests)")
+    ap.add_argument("--documents", action=argparse.BooleanOptionalAction, default=True, help="download each tender's documents")
+    ap.add_argument("--store", action=argparse.BooleanOptionalAction, default=True, help="upload raw pages and documents to object storage")
     ap.add_argument("--max-items", type=int, default=0, help="stop after this many windows (smoke tests)")
     ap.add_argument("--max-hours", type=float, default=5.5)
     args = ap.parse_args()

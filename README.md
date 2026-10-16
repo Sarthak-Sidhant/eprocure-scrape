@@ -28,7 +28,24 @@ Actions tab:
    dashboard; when it finishes, `eprocure-tenders` shows exactly how many windows and tenders will be scraped.
 2. **Scrape eprocure windows**: the actual scrape. Smoke test: `total_jobs=2`, `max_items=2`, `max_tenders=5`.
 
-Speed, pause and auto-backoff are set on the dashboard, not here. Documents (PDF/ZIP) are not downloaded, only their links are stored.
+Speed, pause and auto-backoff are set on the dashboard, not here.
+
+## What is stored, and where
+
+Per tender, in the hub's Postgres (`records`): the search-result row, the window it came from, the bids table, the list of its
+documents (name, kind, size the portal states, and whether it was stored, refused or failed), and the path of its raw pages.
+
+Per tender, in object storage (Cloudflare R2 bucket `eprocure-docs`, folder `eprocure-tenders/`):
+- `pages/<year>/<org>/<tender_id>.json.gz`: the status, details and summary pages as received, gzipped in one file. Every field
+  can be parsed from these later without scraping again.
+- `docs/<year>/<org>/<tender_id>/<file>`: each document the portal serves (evaluation summaries, corrigenda, the BOQ chart as
+  `.xlsx`). Files are identified by their real bytes, not their names, and checked against the size the portal states.
+
+Runners never hold storage keys. They ask the hub for a one-time upload link per file; the hub only agrees to runners it has
+verified through GitHub OIDC, and only under this project's folder. Some tenders' documents are refused by the portal (it returns
+a "session expired" page); those are recorded as `refused`, not stored.
+
+The summary page also links a certificate icon per document (a digital-signature pop-up). That is not a document and is skipped.
 
 ## Add another scraper
 

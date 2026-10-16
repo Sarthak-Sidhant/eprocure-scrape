@@ -111,3 +111,25 @@ def test_a_session_that_raised_is_not_reused(monkeypatch):
     assert pool.free == []                                # the broken session was dropped
     crawl.fetch_pooled(pool, gate, "u", "c")
     assert len(pool.free) == 1 and pool.free[0] is not good      # "c" got a fresh session, not the broken one
+
+
+def test_fetch_pooled_runs_the_after_callback_on_the_live_session_inside_the_gate(monkeypatch):
+    sessions, order = [], []
+
+    def fake_fetch(view_link, tender_id, **kw):
+        crawl.so.thread_local.session = crawl.so.thread_local.session or object()
+        order.append("fetch")
+        return {"d": 1}, "p0", "p1", "p2"
+
+    monkeypatch.setattr(crawl.so, "fetch_tender_details", fake_fetch)
+    pool, gate = crawl.SessionPool(), crawl.Gate(1)
+
+    def after(sess, out):
+        order.append("after")
+        sessions.append((sess, gate.active))
+        return ["downloaded"]
+
+    out, extra = crawl.fetch_pooled(pool, gate, "u", "t1", after=after)
+    assert out[3] == "p2" and extra == ["downloaded"] and order == ["fetch", "after"]
+    assert sessions[0][0] is not None and sessions[0][1] == 1                      # live session, still holding the gate
+    assert len(pool.free) == 1                                                      # and the session went back to the pool afterwards

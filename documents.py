@@ -113,3 +113,49 @@ def attach_documents(details, summary_html):
     details.pop("pdf_documents", None)
     details["documents"] = [{k: d[k] for k in ("name", "kind", "declared_bytes")} for d in extract_documents(summary_html)]
     return details
+
+
+# ---- storing what we fetched: object paths, the raw-pages bundle, and the live download of each document
+
+import gzip  # noqa: E402
+import json  # noqa: E402
+
+MIME = {"pdf": "application/pdf", "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "zip": "application/zip",
+        "ole": "application/vnd.ms-excel", "jpeg": "image/jpeg", "png": "image/png"}
+MAX_DOC_BYTES = 200 * 1024 * 1024
+
+
+def safe_part(s):
+    """Letters, digits . _ - only (the hub rejects anything else in a storage path)."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", s or "").strip("._") or "file"
+
+
+def tender_prefix(tender_id, org_id):
+    """year/org/tender, e.g. 2018/204/2018_NTA_366797_1. Tender ids start with their year."""
+    year = tender_id[:4] if tender_id[:4].isdigit() else "unknown"
+    return f"{year}/{safe_part(str(org_id))}/{safe_part(tender_id)}"
+
+
+def pages_bundle(status_html, details_html, summary_html):
+    """The tender's three portal pages, gzipped as one JSON file, so every field can be re-parsed later without re-scraping."""
+    return gzip.compress(json.dumps({"status": status_html, "details": details_html, "summary": summary_html}).encode("utf-8"), 6)
+
+
+def download_documents(session, docs, timeout=90):
+    """Fetch each document on the live portal session. Returns [(doc, content_or_None, verdict_or_None, error_or_None)].
+
+    Must run right after the summary page was loaded, inside the same session: the links only work there. A portal refusal
+    (the 'session expired' page it returns for restricted tenders) comes back as a verdict with ok=False, not as an exception.
+    """
+    out = []
+    for d in docs:
+        try:
+            r = session.get(d["url"], timeout=timeout)
+            if len(r.content) > MAX_DOC_BYTES:
+                out.append((d, None, None, f"larger than {MAX_DOC_BYTES // 1048576} MB, skipped"))
+                continue
+            out.append((d, r.content, verify_download(d, r.content), None))
+        except Exception as e:
+            out.append((d, None, None, f"{type(e).__name__}: {str(e)[:100]}"))
+    return out
