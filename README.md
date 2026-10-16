@@ -1,31 +1,34 @@
 # eprocure-scrape
 
-Scrapes tenders from [eprocure.gov.in](https://eprocure.gov.in) (GePNIC) for FY 2025-26 in GitHub Actions and reports to
+Scrapes tenders from [eprocure.gov.in](https://eprocure.gov.in) (GePNIC), 2011 to 2026, in GitHub Actions and reports to
 [scrape-hub](https://github.com/Sarthak-Sidhant/scrape-hub), which stores the records in Postgres and shows the live dashboard
 at https://scrape.s1d.me. This repo holds only the scraping code; the hub never contains scraper logic.
 
-## How a run works
+## The idea: plan by window, then scrape
 
-1. **Seed** (`seed.py`): registers the project `eprocure-fy2526` with the hub and queues one item per organisation that has tenders
-   in the window (428 organisations, about 47,973 tenders). The portal's organisation ids shift when organisations are added, so the
-   September counts in `data/` are re-keyed by name against today's dropdown.
-2. **Crawl** (`crawl.py`, 20 parallel slices): each runner claims organisations from the hub queue (slice `i` takes queue partitions
-   where `partition % total_jobs == i`), solves the portal captcha with the bundled CNN (`captcha/`), lists every tender in the date
-   window, fetches the status, details and summary pages, and uploads one JSON record per tender.
-3. **Report**: records, errors, blocks and custom counters (`captcha_ok`, `captcha_fail`, `http_429`, ...) go to the hub through
-   [`scrape-hub-client`](https://github.com/Sarthak-Sidhant/scrape-hub/tree/main/client). The runner authenticates with a short-lived
-   GitHub OIDC token, so the hub knows which repository is calling and no secrets are stored here.
+Scraping one organisation as a single unit leaves the biggest ones (one org-year has 36,000 tenders) pinned to one runner. So the
+work is split into **windows** (organisation + date range) first.
 
-Safety checks: an organisation whose live portal label no longer matches its queued name is failed instead of crawled, and one that
-lists fewer than 90% of its expected tenders is flagged rather than marked done.
+1. **Plan** (`plan.py`, then the *Plan* workflow). `data/org_year_counts.json` holds tenders per organisation per year (894,668
+   tenders, 2011 to 2026, 733 organisations). An org-year with at most 600 tenders becomes one scrape window. A bigger one gets
+   **12 count tasks, one per month**. A count task is one portal search (the results footer says "Total records: N"); if the
+   month is still over 1,200 tenders it is **halved** until every window fits. Every count is stored as a record in the hub project
+   `eprocure-plan`, which is the tenders-per-window table.
+2. **Scrape** (`crawl.py`, the *Scrape* workflow). Each runner claims windows from `eprocure-tenders`, lists the window, fetches each
+   tender's status, details and summary pages, and uploads one record per tender (the record carries its window). A runner that
+   runs out of its own share takes windows from other slices, so no runner idles while others still have work.
+
+The portal's organisation ids shift when organisations are added, so ids are re-keyed by name against the live dropdown when seeding,
+and a window whose organisation label no longer matches is failed rather than scraped.
 
 ## Run it
 
-Actions tab, **Crawl eprocure FY 2025-26**, Run workflow. For a smoke test use `total_jobs=2`, `max_orgs=1`, `max_tenders=5`.
-The default (20 runners, no caps) crawls everything and takes hours. Failed organisations stay failed until you tick `reset_failed`
-or press Retry on the dashboard.
+Actions tab:
+1. **Plan eprocure windows**: counts the tenders and builds the scrape queue. Smoke test: `max_items=5`. Watch `eprocure-plan` on the
+   dashboard; when it finishes, `eprocure-tenders` shows exactly how many windows and tenders will be scraped.
+2. **Scrape eprocure windows**: the actual scrape. Smoke test: `total_jobs=2`, `max_items=2`, `max_tenders=5`.
 
-Documents (PDF/ZIP) are not downloaded, only their links are stored in each record.
+Speed, pause and auto-backoff are set on the dashboard, not here. Documents (PDF/ZIP) are not downloaded, only their links are stored.
 
 ## Add another scraper
 
@@ -36,7 +39,7 @@ from scrape_hub_client import HubClient, register_project, seed_queue
 register_project("my-project", title="...", unit_label="page", record_label="row")
 seed_queue("my-project", [{"key": "1", "payload": {"expected": 100}}])
 hub = HubClient("my-project", job_index=0, total_jobs=1)
-for item in hub.claim(1):
+for item in hub.claim(1, steal=True):
     ...                                  # scrape
     hub.record("row-id", {...})
     hub.metric("captcha_ok")
@@ -48,4 +51,4 @@ The first repo to use a project name owns it; other repos get a 403 for it.
 
 ## Develop
 
-`pip install -r requirements.txt pytest && pytest` (the tests cover the id remapping; there is no network access in them).
+`pip install -r requirements.txt pytest && pytest` (no network in the tests).

@@ -23,9 +23,9 @@ from scrape_hub_client import HubClient  # noqa: E402
 
 import orgs as orgs_mod  # noqa: E402
 import scrape_organization as so  # noqa: E402
+from plan import TENDERS  # noqa: E402
 
-PROJECT = "eprocure-fy2526"
-FROM_DATE, TO_DATE = "01/04/2025", "31/03/2026"
+PROJECT = TENDERS
 
 _seen = {}
 _seen_lock = threading.Lock()
@@ -114,13 +114,13 @@ def sync_metrics(hub):
                 _seen[k] = v
 
 
-def list_tenders(org_id, out_dir, max_tenders, retries):
+def list_tenders(org_id, out_dir, max_tenders, retries, from_date, to_date):
     """All tender rows for the organisation in the window (paged search results)."""
     s = requests.Session()
     s.mount("https://", HTTPAdapter(pool_connections=4, pool_maxsize=4, max_retries=3))
     s.cookies.set("cookieWorked", "yes", domain="eprocure.gov.in", path="/")
     s.headers.update({"User-Agent": so.USER_AGENT, "Accept-Language": "en-US,en;q=0.5"})
-    html = so.fetch_search_page(s, org_id=org_id, max_retries=retries, output_dir=out_dir, from_date=FROM_DATE, to_date=TO_DATE)
+    html = so.fetch_search_page(s, org_id=org_id, max_retries=retries, output_dir=out_dir, from_date=from_date, to_date=to_date)
     out = []
     while True:
         rows, nxt = so.parse_results_page(html)
@@ -144,7 +144,10 @@ def label_matches(org_id, name):
 
 def crawl_org(hub, item, args, deadline, gate):
     """Returns (status, error, fetched) for hub.complete()."""
-    org_id, name = item["payload"]["org_id"], item["payload"]["org_name"]
+    p = item["payload"]
+    org_id, name = p["org_id"], p["org_name"]
+    # Items made before date windows existed have no window: they cover FY 2025-26.
+    frm, to = p.get("from_date", "01/04/2025"), p.get("to_date", "31/03/2026")
     try:
         ok = label_matches(org_id, name)
     except Exception as e:
@@ -159,7 +162,7 @@ def crawl_org(hub, item, args, deadline, gate):
     tenders = []
     for _attempt in range(2):  # an empty result for a populated org can be a transient block; retry on a fresh session
         try:
-            tenders = list_tenders(org_id, out_dir, args.max_tenders, args.retries)
+            tenders = list_tenders(org_id, out_dir, args.max_tenders, args.retries, frm, to)
         except Exception as e:
             hub.block()
             sync_metrics(hub)
@@ -172,7 +175,7 @@ def crawl_org(hub, item, args, deadline, gate):
         hub.block()
         if not tenders:
             return "failed", f"portal listed 0 of {expected} expected tenders", 0
-    hub.note(f"{name[:60]}: {len(tenders)} tenders" + (f" (expected {expected})" if expected else ""))
+    hub.note(f"{name[:48]} {frm}-{to}: {len(tenders)} tenders" + (f" (expected {expected})" if expected else ""))
     state = {"ok": 0, "failed": 0}
     pool = SessionPool()
 
@@ -183,10 +186,10 @@ def crawl_org(hub, item, args, deadline, gate):
         obey_hub(hub, gate)
         try:
             details, *_ = fetch_pooled(pool, gate, t.get("view_link"), t["tender_id"], org_id=org_id,
-                                       output_dir=out_dir, from_date=FROM_DATE, to_date=TO_DATE)
+                                       output_dir=out_dir, from_date=frm, to_date=to)
             if not details:
                 raise RuntimeError("no details parsed")
-            hub.record(t["tender_id"], {"org_id": org_id, "org_name": name, "list": t, "details": details})
+            hub.record(t["tender_id"], {"org_id": org_id, "org_name": name, "window": [frm, to], "list": t, "details": details})
             state["ok"] += 1
         except Exception:
             state["failed"] += 1
@@ -210,18 +213,18 @@ def main():
     ap.add_argument("--threads", type=int, default=4, help="starting threads per runner; the dashboard setting overrides it")
     ap.add_argument("--retries", type=int, default=10)
     ap.add_argument("--max-tenders", type=int, default=0, help="cap tenders per org (smoke tests)")
-    ap.add_argument("--max-orgs", type=int, default=0, help="stop after this many orgs (smoke tests)")
+    ap.add_argument("--max-items", type=int, default=0, help="stop after this many windows (smoke tests)")
     ap.add_argument("--max-hours", type=float, default=5.5)
     args = ap.parse_args()
 
     deadline = time.time() + args.max_hours * 3600
-    hub = HubClient(PROJECT, args.job_index, args.total_jobs, note="fy2025-26 crawl")
+    hub = HubClient(PROJECT, args.job_index, args.total_jobs, note="scraping windows")
     hub.settings["threads"] = args.threads   # starting value; the hub's setting replaces it on the first response
     gate = Gate(args.threads)
     done = 0
     try:
-        while time.time() < deadline and not (args.max_orgs and done >= args.max_orgs):
-            items = hub.claim(1)
+        while time.time() < deadline and not (args.max_items and done >= args.max_items):
+            items = hub.claim(1, steal=True)
             if hub.settings.get("paused"):
                 time.sleep(5)          # paused from the dashboard: hold, keep the heartbeat alive, then ask again
                 continue
@@ -231,7 +234,7 @@ def main():
             status, error, fetched = crawl_org(hub, item, args, deadline, gate)
             hub.complete([item["key"]], status, error=error, fetched=fetched)
             done += 1
-        hub.close("finished", f"{done} orgs")
+        hub.close("finished", f"{done} windows")
     except BaseException as e:
         hub.close("failed", f"{type(e).__name__}: {e}"[:200])
         raise

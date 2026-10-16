@@ -1,4 +1,4 @@
-name: Crawl eprocure FY 2025-26
+name: Scrape eprocure windows
 
 on:
   workflow_dispatch:
@@ -6,16 +6,12 @@ on:
       total_jobs:
         description: "Parallel runners (the matrix has 20 slots; slots >= this value exit immediately)"
         default: "20"
-      max_orgs:
-        description: "Stop each runner after this many organisations (0 = no limit; use 1-2 for a smoke test)"
+      max_items:
+        description: "Stop each runner after this many windows (0 = no limit; use 2-5 for a smoke test)"
         default: "0"
       max_tenders:
-        description: "Cap tenders per organisation (0 = no limit; use 5-60 for a smoke test)"
+        description: "Cap tenders per window (0 = no limit; use 5-60 for a smoke test)"
         default: "0"
-      reset_failed:
-        description: "Requeue organisations that failed earlier"
-        type: boolean
-        default: false
 
 permissions:
   id-token: write   # lets the job mint the OIDC token scrape-hub uses to verify which repo is calling
@@ -25,20 +21,8 @@ env:
   SCRAPE_HUB_URL: https://scrape.s1d.me
 
 jobs:
-  seed:
-    name: Seed queue
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: pip install requests beautifulsoup4 lxml "scrape-hub-client @ git+https://github.com/Sarthak-Sidhant/scrape-hub@main#subdirectory=client"
-      - run: python seed.py ${{ inputs.reset_failed && '--reset-failed' || '' }}
-
   crawl:
     name: Slice ${{ matrix.job_index }}
-    needs: seed
     runs-on: ubuntu-latest
     timeout-minutes: 345
     strategy:
@@ -55,9 +39,9 @@ jobs:
         run: |
           pip install -r requirements.txt
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-      - name: Crawl
+      - name: Scrape windows
         if: ${{ matrix.job_index < fromJSON(inputs.total_jobs) }}
         run: >
           python crawl.py
           --job-index ${{ matrix.job_index }} --total-jobs ${{ inputs.total_jobs }}
-          --max-orgs ${{ inputs.max_orgs }} --max-tenders ${{ inputs.max_tenders }}
+          --max-items ${{ inputs.max_items }} --max-tenders ${{ inputs.max_tenders }}
