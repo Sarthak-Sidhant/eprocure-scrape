@@ -142,6 +142,10 @@ def pages_bundle(status_html, details_html, summary_html):
     return gzip.compress(json.dumps({"status": status_html, "details": details_html, "summary": summary_html}).encode("utf-8"), 6)
 
 
+PORTAL_ERROR = ("the portal's download service failed for this file (it redirects to its generic error page, which says 'session "
+                "expired'; a real browser gets the same page, so it is not something the scraper can fix)")
+
+
 def download_documents(session, docs, timeout=90):
     """Fetch each document on the live portal session. Returns [(doc, content_or_None, verdict_or_None, error_or_None)].
 
@@ -155,7 +159,10 @@ def download_documents(session, docs, timeout=90):
             if len(r.content) > MAX_DOC_BYTES:
                 out.append((d, None, None, f"larger than {MAX_DOC_BYTES // 1048576} MB, skipped"))
                 continue
-            out.append((d, r.content, verify_download(d, r.content), None))
+            v = verify_download(d, r.content)
+            if not v["ok"] and ("CommonErrorPage" in getattr(r, "url", "") or b"session in the client area has expired" in r.content.lower()):
+                v["reason"] = PORTAL_ERROR
+            out.append((d, r.content, v, None))
         except Exception as e:
             out.append((d, None, None, f"{type(e).__name__}: {str(e)[:100]}"))
     return out

@@ -101,9 +101,11 @@ class FakeSession:
         v = self.bodies[url]
         if isinstance(v, Exception):
             raise v
+        final_url = "https://eprocure.gov.in/eprocure/app?page=CommonErrorPage&service=page" if b"expired" in v else url
 
         class R:
             content = v
+        R.url = final_url
         return R
 
 
@@ -114,5 +116,5 @@ def test_download_documents_separates_good_files_portal_refusals_and_errors():
     out = documents.download_documents(FakeSession({"u1": b"%PDF-1.4 " + b"x" * 50, "u2": refusal, "u3": TimeoutError("slow")}), docs)
     (d1, c1, v1, e1), (d2, c2, v2, e2), (d3, c3, v3, e3) = out
     assert v1["ok"] and c1.startswith(b"%PDF") and e1 is None
-    assert v2["ok"] is False and "html" in v2["reason"] and e2 is None            # refused by the portal: a verdict, not an exception
+    assert v2["ok"] is False and v2["reason"] == documents.PORTAL_ERROR and e2 is None   # refused by the portal: a verdict, not an exception
     assert v3 is None and c3 is None and "TimeoutError" in e3
