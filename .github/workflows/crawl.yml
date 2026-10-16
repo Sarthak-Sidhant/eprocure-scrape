@@ -15,6 +15,9 @@ on:
       procs:
         description: "Crawler processes per runner. One Python process tops out near 100-350 tenders/min (it is CPU-bound); a runner has 4 cores."
         default: "4"
+      stagger:
+        description: "Spread the start of all processes over this many seconds (protects the portal's search page)"
+        default: "120"
       rescrape:
         description: "Fetch tenders again even if already stored (used for speed experiments on windows that are already done)"
         type: boolean
@@ -54,6 +57,7 @@ jobs:
         if: ${{ matrix.job_index < fromJSON(inputs.total_jobs) }}
         env:
           PROCS: ${{ inputs.procs }}
+          STAGGER: ${{ inputs.stagger }}
           TOTAL_JOBS: ${{ inputs.total_jobs }}
           JOB: ${{ matrix.job_index }}
           MAX_ITEMS: ${{ inputs.max_items }}
@@ -65,7 +69,7 @@ jobs:
           pids=()
           for p in $(seq 0 $((PROCS - 1))); do
             python crawl.py --job-index $((JOB * PROCS + p)) --total-jobs $((TOTAL_JOBS * PROCS)) \
-              --max-items "$MAX_ITEMS" --max-tenders "$MAX_TENDERS" $DOCS $RESCRAPE &
+              --max-items "$MAX_ITEMS" --max-tenders "$MAX_TENDERS" --stagger "$STAGGER" $DOCS $RESCRAPE &
             pids+=($!)
           done
           fail=0

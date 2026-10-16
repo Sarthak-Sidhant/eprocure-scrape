@@ -120,6 +120,22 @@ def test_download_documents_separates_good_files_portal_refusals_and_errors():
     assert v3 is None and c3 is None and "TimeoutError" in e3
 
 
+def test_parallel_downloads_give_the_same_answers_in_the_same_order():
+    import time as _t
+    refusal = b"<html><body>Your session in the client area has expired.</body></html>"
+    bodies = {f"u{i}": (refusal if i % 3 == 0 else b"%PDF-1.4 " + bytes([65 + i]) * 40) for i in range(9)}
+    docs = [{"name": f"{i}.pdf", "url": f"u{i}", "declared_bytes": None} for i in range(9)]
+
+    class Slow(FakeSession):
+        def get(self, url, timeout=0):
+            _t.sleep(0.05 * (9 - int(url[1:])) / 9)        # later documents finish first
+            return super().get(url, timeout)
+
+    seq = documents.download_documents(Slow(bodies), docs, parallel=1)
+    par = documents.download_documents(Slow(bodies), docs, parallel=4)
+    assert [(d["name"], c, v["ok"], e) for d, c, v, e in seq] == [(d["name"], c, v["ok"], e) for d, c, v, e in par]
+
+
 class RecordingHub:
     def __init__(self):
         self.failures, self.cleared = [], []

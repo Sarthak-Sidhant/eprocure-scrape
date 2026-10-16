@@ -8,6 +8,7 @@ are not downloaded; the metadata and links are stored in the record.
 import argparse
 import contextlib
 import os
+import random
 import sys
 import tempfile
 import threading
@@ -33,7 +34,8 @@ PROJECT = TENDERS
 _seen = {}
 _seen_lock = threading.Lock()
 
-MAX_POOL = 32  # worker threads we can ever use; the hub's `threads` setting decides how many run at once
+MAX_POOL = 32  # most portal requests in flight at once; the hub's `threads` setting decides how many run
+WORKERS = 2 * MAX_POOL   # worker threads: the spare ones upload and parse while the gated ones talk to the portal
 
 
 @contextlib.contextmanager
@@ -225,6 +227,8 @@ def crawl_org(hub, item, args, deadline, gate):
             sync_metrics(hub)
             return "failed", f"search failed ({type(e).__name__}: {str(e)[:120]})", 0
         sync_metrics(hub)
+        if not tenders and expected and _attempt == 0:
+            time.sleep(random.uniform(10, 30))      # an empty answer is usually the portal being busy: let it recover
         if tenders or not expected:
             break
     short = not args.max_tenders and expected and len(tenders) < expected * 0.9
@@ -312,7 +316,7 @@ def crawl_org(hub, item, args, deadline, gate):
             hub.failure("tender", t["tender_id"], f"{type(exc).__name__}: {str(exc)[:200]}", org_id=org_id, org_name=name, window=[frm, to])
         sync_metrics(hub)
 
-    with ThreadPoolExecutor(max_workers=MAX_POOL) as ex:
+    with ThreadPoolExecutor(max_workers=WORKERS) as ex:
         list(ex.map(one, todo))
     hub.flush()
     if state["failed"]:
@@ -333,10 +337,13 @@ def main():
     ap.add_argument("--documents", action=argparse.BooleanOptionalAction, default=True, help="download each tender's documents")
     ap.add_argument("--store", action=argparse.BooleanOptionalAction, default=True, help="upload raw pages and documents to object storage")
     ap.add_argument("--max-items", type=int, default=0, help="stop after this many windows (smoke tests)")
+    ap.add_argument("--stagger", type=float, default=0, help="spread process start-up over this many seconds")
     ap.add_argument("--max-hours", type=float, default=5.5)
     args = ap.parse_args()
 
     deadline = time.time() + args.max_hours * 3600
+    if args.stagger:
+        time.sleep(random.uniform(0, args.stagger))   # many processes starting together all hit the portal's search at once
     hub = HubClient(PROJECT, args.job_index, args.total_jobs, note="scraping windows")
     hub.settings["threads"] = args.threads   # starting value; the hub's setting replaces it on the first response
     gate = Gate(args.threads)
