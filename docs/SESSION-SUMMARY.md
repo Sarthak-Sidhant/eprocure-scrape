@@ -4,7 +4,7 @@ Written 2026-10-17 after the scrape reached 94.6%. Times are CEST (the hub host'
 experiment log; this file pulls the whole story together.
 
 ## Current state
-- **846,420 of 895,058 tenders stored with real data (94.6%).** About 25,000 are missing (2.8% of the total), all in windows that
+- **846,707 of 895,058 tenders stored with real data (94.6%).** A further 1,171 rows are empty captures from the portal outages; they are fetched again on the next pass. About 25,000 are missing (about 2.8% of the total), all in windows that
   failed while the portal was down. The rest of the gap to 100% is tenders the plan counted that the portal may no longer list.
 - Queue: 1,236 windows done, 209 failed (retryable), 40 pending. No run is active; the operator stopped the last one on the evening of 17 Oct, after 20:44.
 - Documents: 1.49 million files stored (about 627 GB, 1.25M PDFs, 241k Excel). 720,330 document links (32%) are refused by the portal
