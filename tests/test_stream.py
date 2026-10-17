@@ -1,0 +1,110 @@
+import os
+import sys
+import threading
+import time
+from types import SimpleNamespace
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
+import crawl  # noqa: E402
+
+
+class FakeHub:
+    def __init__(self, stored=0):
+        self.stored, self.settings, self.notes, self.failures = stored, {"threads": 8}, [], []
+
+    def window_stored(self, org_id, frm, to):
+        return self.stored
+
+    def known(self, ids):
+        return []
+
+    def note(self, text):
+        self.notes.append(text)
+
+    def block(self): pass
+    def error(self): pass
+    def flush(self): pass
+    def metric(self, *a, **k): pass
+    def clear_failure(self, *a, **k): pass
+
+    def failure(self, kind, key, reason, **k):
+        self.failures.append((kind, key))
+
+
+def args(**kw):
+    return SimpleNamespace(rescrape=False, max_tenders=0, retries=1, documents=False, store=False, **kw)
+
+
+def item(expected):
+    return {"key": "k", "payload": {"org_id": "1", "org_name": "Org", "from_date": "01/01/2019", "to_date": "31/12/2019", "expected": expected}}
+
+
+def rows(page, n=10):
+    return [{"tender_id": f"T{page}_{i}", "view_link": f"link{page}_{i}"} for i in range(n)]
+
+
+def test_complete_window_is_skipped_without_listing(monkeypatch):
+    monkeypatch.setattr(crawl, "label_matches", lambda *a: True)
+    monkeypatch.setattr(crawl, "list_pages", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not list")))
+    status, err, fetched = crawl.crawl_org(FakeHub(stored=99), item(100), args(), time.time() + 60, crawl.Gate(4))
+    assert status == "done" and fetched == 99 and "already complete" in err        # 99 of 100 is above the 98% line
+    # 90 of 100 is not complete: it is listed
+    monkeypatch.setattr(crawl, "list_pages", lambda *a, **k: iter([]))
+    status, err, fetched = crawl.crawl_org(FakeHub(stored=90), item(100), args(), time.time() + 60, crawl.Gate(4))
+    assert "already complete" not in err
+
+
+def test_fetching_starts_before_the_listing_has_finished(monkeypatch):
+    monkeypatch.setattr(crawl, "label_matches", lambda *a: True)
+    events, lock = [], threading.Lock()
+
+    def pages(*a, **k):
+        for p in range(4):
+            time.sleep(0.15)                                  # a results page takes a while to arrive
+            with lock:
+                events.append(("page", p))
+            yield rows(p)
+
+    def fake_fetch(pool, gate, view_link, tender_id, **k):
+        with lock:
+            events.append(("fetch", tender_id))
+        raise RuntimeError("no portal in tests")
+
+    monkeypatch.setattr(crawl, "list_pages", pages)
+    monkeypatch.setattr(crawl, "fetch_pooled", fake_fetch)
+    hub = FakeHub()
+    status, err, fetched = crawl.crawl_org(hub, item(40), args(), time.time() + 60, crawl.Gate(8))
+    first_fetch = next(i for i, e in enumerate(events) if e[0] == "fetch")
+    last_page = max(i for i, e in enumerate(events) if e[0] == "page")
+    assert first_fetch < last_page                            # tenders from the first pages were being fetched while later pages were still coming
+    assert status == "failed" and "40 of 40 tender pages failed" in err
+    assert len([e for e in events if e[0] == "fetch"]) == 40
+
+
+def test_listing_error_still_processes_what_was_listed(monkeypatch):
+    monkeypatch.setattr(crawl, "label_matches", lambda *a: True)
+    seen = []
+
+    def pages(*a, **k):
+        yield rows(0, 25)
+        raise RuntimeError("portal timed out")
+
+    monkeypatch.setattr(crawl, "list_pages", pages)
+    monkeypatch.setattr(crawl, "fetch_pooled", lambda pool, gate, view_link, tender_id, **k: seen.append(tender_id) or (_ for _ in ()).throw(RuntimeError("x")))
+    status, err, fetched = crawl.crawl_org(FakeHub(), item(100), args(), time.time() + 60, crawl.Gate(8))
+    assert status == "failed" and err.startswith("search failed") and len(seen) == 25
+
+
+def test_list_pages_yields_page_by_page_and_honours_the_cap(monkeypatch):
+    html = {"first": "p0", "n1": "p1", "n2": "p2"}
+    nxt = {"p0": ("n1"), "p1": ("n2"), "p2": None}
+    monkeypatch.setattr(crawl.so, "fetch_search_page", lambda *a, **k: "p0")
+    monkeypatch.setattr(crawl.so, "parse_results_page", lambda h: (rows(int(h[1])), nxt[h]))
+    monkeypatch.setattr(crawl.so, "safe_request", lambda s, m, url: SimpleNamespace(text={"n1": "p1", "n2": "p2"}[url]))
+    monkeypatch.setattr(crawl.time, "sleep", lambda s: None)
+    got = list(crawl.list_pages("1", "/tmp", 0, 1, "a", "b"))
+    assert [len(r) for r in got] == [10, 10, 10]
+    capped = list(crawl.list_pages("1", "/tmp", 15, 1, "a", "b"))
+    assert [len(r) for r in capped] == [10, 5]
+    assert len(crawl.list_tenders("1", "/tmp", 0, 1, "a", "b")) == 30

@@ -35,6 +35,7 @@ _seen = {}
 _seen_lock = threading.Lock()
 
 MAX_POOL = 32  # most portal requests in flight at once; the hub's `threads` setting decides how many run
+COMPLETE_FRACTION = 0.98  # a window with at least this share of its planned tenders stored is treated as complete
 WORKERS = 2 * MAX_POOL   # worker threads: the spare ones upload and parse while the gated ones talk to the portal
 
 
@@ -172,22 +173,30 @@ def sync_metrics(hub):
             _last_cpu[2] = True
 
 
-def list_tenders(org_id, out_dir, max_tenders, retries, from_date, to_date):
-    """All tender rows for the organisation in the window (paged search results)."""
+def list_pages(org_id, out_dir, max_tenders, retries, from_date, to_date):
+    """Yield the tender rows of each results page as it arrives (10 a page, about 3.4 s a page), so fetching can start before
+    the whole window has been listed."""
     s = requests.Session()
     s.mount("https://", HTTPAdapter(pool_connections=4, pool_maxsize=4, max_retries=3))
     s.cookies.set("cookieWorked", "yes", domain="eprocure.gov.in", path="/")
     s.headers.update({"User-Agent": so.USER_AGENT, "Accept-Language": "en-US,en;q=0.5"})
     html = so.fetch_search_page(s, org_id=org_id, max_retries=retries, output_dir=out_dir, from_date=from_date, to_date=to_date)
-    out = []
+    seen = 0
     while True:
         rows, nxt = so.parse_results_page(html)
-        out.extend(rows)
-        if not nxt or (max_tenders and len(out) >= max_tenders):
-            break
+        if max_tenders:
+            rows = rows[:max_tenders - seen]
+        seen += len(rows)
+        yield rows
+        if not nxt or (max_tenders and seen >= max_tenders):
+            return
         html = so.safe_request(s, "GET", nxt).text
         time.sleep(0.4)
-    return out[:max_tenders] if max_tenders else out
+
+
+def list_tenders(org_id, out_dir, max_tenders, retries, from_date, to_date):
+    """All tender rows for the organisation in the window (paged search results)."""
+    return [r for rows in list_pages(org_id, out_dir, max_tenders, retries, from_date, to_date) for r in rows]
 
 
 _LIVE = {}
@@ -217,34 +226,20 @@ def crawl_org(hub, item, args, deadline, gate):
 
     out_dir = tempfile.mkdtemp(prefix=f"org{org_id}_")
     expected = int(item["payload"].get("expected") or 0)
-    tenders = []
-    for _attempt in range(2):  # an empty result for a populated org can be a transient block; retry on a fresh session
+    if expected and not args.rescrape and not args.max_tenders:
         try:
-            with timed("list"):
-                tenders = list_tenders(org_id, out_dir, args.max_tenders, args.retries, frm, to)
-        except Exception as e:
-            hub.block()
-            sync_metrics(hub)
-            return "failed", f"search failed ({type(e).__name__}: {str(e)[:120]})", 0
-        sync_metrics(hub)
-        if not tenders and expected and _attempt == 0:
-            time.sleep(random.uniform(10, 30))      # an empty answer is usually the portal being busy: let it recover
-        if tenders or not expected:
-            break
-    short = not args.max_tenders and expected and len(tenders) < expected * 0.9
-    if short:
-        hub.block()
-        if not tenders:
-            return "failed", f"portal listed 0 of {expected} expected tenders", 0
-    todo, skipped = not_yet_stored(hub, tenders, args.rescrape)
-    if skipped:
-        so.bump("skipped_known", skipped)
-    hub.note(f"{name[:48]} {frm}-{to}: {len(tenders)} tenders" + (f", {skipped} already stored" if skipped else "") + (f" (expected {expected})" if expected else ""))
+            have = hub.window_stored(org_id, frm, to)
+        except Exception:
+            have = 0                                   # cannot tell: list it (safe, just slower)
+        if have >= expected * COMPLETE_FRACTION:       # the plan's count says it is all here already: no need to list 10 tenders at a time
+            so.bump("windows_skipped_complete")
+            hub.note(f"{name[:48]} {frm}-{to}: already complete ({have} stored of {expected} expected)")
+            return "done", f"already complete: {have} stored of {expected} expected", have
     state = {"ok": 0, "failed": 0}
     pool = SessionPool()
-    # Every session costs a captcha (about 1.75 tries, ~3 s). A window with few tenders left must not open a session per thread:
-    # allow roughly one session per 4 tenders to fetch, so each session is reused several times.
-    sessions = threading.Semaphore(max(1, min(MAX_POOL, len(todo) // 4)))
+    # Every session costs a captcha (about 1.75 tries, ~3 s). A small window must not open a session per thread:
+    # allow roughly one session per 4 tenders, so each session is reused several times.
+    sessions = threading.Semaphore(max(1, min(MAX_POOL, (expected or 40) // 4)))
 
     def one(t):
         if time.time() > deadline:
@@ -320,13 +315,64 @@ def crawl_org(hub, item, args, deadline, gate):
             hub.failure("tender", t["tender_id"], f"{type(exc).__name__}: {str(exc)[:200]}", org_id=org_id, org_name=name, window=[frm, to])
         sync_metrics(hub)
 
-    with ThreadPoolExecutor(max_workers=WORKERS) as ex:
-        list(ex.map(one, todo))
+    # Fetch while listing: each results page's new tenders go to the workers at once, instead of waiting for the whole listing.
+    ex = ThreadPoolExecutor(max_workers=WORKERS)
+    futures, listed, skipped = [], 0, 0
+
+    def submit(rows):
+        nonlocal skipped
+        todo, sk = not_yet_stored(hub, rows, args.rescrape)
+        skipped += sk
+        futures.extend(ex.submit(one, t) for t in todo)
+
+    list_error = None
+    for _attempt in range(2):  # an empty result for a populated org can be a transient block; retry on a fresh session
+        buf = []
+        try:
+            pages = list_pages(org_id, out_dir, args.max_tenders, args.retries, frm, to)
+            while True:
+                with timed("list"):
+                    rows = next(pages, None)
+                if rows is None:
+                    break
+                listed += len(rows)
+                buf.extend(rows)
+                if len(buf) >= 20:
+                    submit(buf)
+                    buf = []
+            if buf:
+                submit(buf)
+        except Exception as e:
+            hub.block()
+            list_error = f"search failed ({type(e).__name__}: {str(e)[:120]})"
+            if buf:
+                submit(buf)                            # what was already listed is still worth fetching
+            break
+        finally:
+            sync_metrics(hub)
+        if not listed and expected and _attempt == 0:
+            time.sleep(random.uniform(10, 30))         # an empty answer is usually the portal being busy: let it recover
+        if listed or not expected:
+            break
+    for f in futures:
+        f.result()
+    ex.shutdown()
+    todo_n = len(futures)
+    hub.note(f"{name[:48]} {frm}-{to}: {listed} tenders" + (f", {skipped} already stored" if skipped else "") + (f" (expected {expected})" if expected else ""))
+    if skipped:
+        so.bump("skipped_known", skipped)
+    if list_error:
+        return "failed", list_error, state["ok"] + skipped
+    short = not args.max_tenders and expected and listed < expected * 0.9
+    if short:
+        hub.block()
+        if not listed:
+            return "failed", f"portal listed 0 of {expected} expected tenders", 0
     hub.flush()
     if state["failed"]:
-        return "failed", f"{state['failed']} of {len(todo)} tender pages failed", state["ok"] + skipped
+        return "failed", f"{state['failed']} of {todo_n} tender pages failed", state["ok"] + skipped
     if short:
-        return "done", f"listed {len(tenders)} of {expected} expected", state["ok"] + skipped
+        return "done", f"listed {listed} of {expected} expected", state["ok"] + skipped
     return "done", "", state["ok"] + skipped
 
 
