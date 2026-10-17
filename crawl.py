@@ -26,6 +26,7 @@ from scrape_hub_client import HubClient  # noqa: E402
 import documents  # noqa: E402
 import orgs as orgs_mod  # noqa: E402
 import parsing  # noqa: E402
+import sections  # noqa: E402
 import scrape_organization as so  # noqa: E402
 from plan import TENDERS  # noqa: E402
 
@@ -292,6 +293,10 @@ def crawl_org(hub, item, args, deadline, gate):
             except Exception as pe:
                 details["parse_error"] = f"{type(pe).__name__}: {str(pe)[:200]}"
                 hub.failure("parse", t["tender_id"], details["parse_error"], org_id=org_id, org_name=name, window=[frm, to])
+            try:   # the tender's own document lists, covers, payment instruments, corrigenda (backfill.py does the same for tenders stored earlier)
+                details["sections"] = sections.parse_sections(page1)
+            except Exception as se:
+                details["sections_error"] = f"{type(se).__name__}: {str(se)[:120]}"
             so.bump("t_parse_s", time.perf_counter() - _t_parse)
             if files:
                 with timed("upload"):
