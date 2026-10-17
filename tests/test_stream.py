@@ -108,3 +108,41 @@ def test_list_pages_yields_page_by_page_and_honours_the_cap(monkeypatch):
     capped = list(crawl.list_pages("1", "/tmp", 15, 1, "a", "b"))
     assert [len(r) for r in capped] == [10, 5]
     assert len(crawl.list_tenders("1", "/tmp", 0, 1, "a", "b")) == 30
+
+
+class WaitHub:
+    """A hub that has nothing to hand out now but still has windows waiting, then hands one out, then reports all done."""
+    def __init__(self, script):
+        self.script, self.settings, self.queue, self.notes = list(script), {"paused": False}, {}, []
+
+    def claim(self, limit=1, steal=False, retry_failed=False):
+        assert steal and retry_failed
+        items, self.queue = self.script.pop(0)
+        return items
+
+    def note(self, t):
+        self.notes.append(t)
+
+
+def test_claim_next_waits_while_windows_remain_and_stops_when_all_done():
+    sleeps = []
+    hub = WaitHub([([], {"pending": 0, "claimed": 3, "retry": 0}),          # others are still working
+                   ([], {"pending": 0, "claimed": 0, "retry": 5}),          # failed windows are waiting for their pause
+                   ([{"key": "w"}], {"pending": 0, "claimed": 1, "retry": 4})])
+    got = crawl.claim_next(hub, time.time() + 600, sleep=sleeps.append)
+    assert got == [{"key": "w"}] and len(sleeps) == 2 and all(30 <= s <= 60 for s in sleeps)
+    assert "waiting for the other runners" in hub.notes[0] and "retry failed" in hub.notes[1]
+    done = WaitHub([([], {"pending": 0, "claimed": 0, "retry": 0})])
+    assert crawl.claim_next(done, time.time() + 600, sleep=sleeps.append) == []        # everything is done: the run may end
+
+
+def test_claim_next_gives_up_at_the_deadline_and_honours_a_pause():
+    hub = WaitHub([([], {"pending": 0, "claimed": 0, "retry": 9})] * 3)
+    assert crawl.claim_next(hub, time.time() - 1, sleep=lambda s: None) == []          # out of time: stop even though work remains
+    paused = WaitHub([([], {"pending": 5}), ([{"key": "x"}], {"pending": 4})])
+    paused.settings["paused"] = True
+    calls = []
+    def sleep(s):
+        calls.append(s)
+        paused.settings["paused"] = False
+    assert crawl.claim_next(paused, time.time() + 600, sleep=sleep) == [{"key": "x"}] and calls == [5]

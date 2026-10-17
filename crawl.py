@@ -376,6 +376,27 @@ def crawl_org(hub, item, args, deadline, gate):
     return "done", "", state["ok"] + skipped
 
 
+def claim_next(hub, deadline, sleep=time.sleep):
+    """The next window to crawl, waiting as long as work remains. [] means every window is done (or the time is up).
+
+    Stays up while others are still working (a window they fail comes back), and while failed windows are waiting for their
+    retry pause: the hub hands those out again once nothing is pending, never while the target is down. A window that has
+    been tried too many times is given up on by the hub, so this cannot loop forever."""
+    while time.time() < deadline:
+        items = hub.claim(1, steal=True, retry_failed=True)
+        if hub.settings.get("paused"):
+            sleep(5)                   # paused from the dashboard: hold, keep the heartbeat alive, then ask again
+            continue
+        if items:
+            return items
+        q = getattr(hub, "queue", None) or {}
+        if q.get("pending", 0) + q.get("claimed", 0) + q.get("retry", 0) == 0:
+            return []
+        hub.note("waiting to retry failed windows" if q.get("retry") else "waiting for the other runners to finish")
+        sleep(random.uniform(30, 60))
+    return []
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--job-index", type=int, default=0)
@@ -408,10 +429,7 @@ def main():
                 hub.complete([item["key"]], "pending", error=f"capped test run ({status}); left for the full scrape", fetched=fetched)
                 done += 1
         while not args.max_tenders and time.time() < deadline and not (args.max_items and done >= args.max_items):
-            items = hub.claim(1, steal=True)
-            if hub.settings.get("paused"):
-                time.sleep(5)          # paused from the dashboard: hold, keep the heartbeat alive, then ask again
-                continue
+            items = claim_next(hub, deadline)
             if not items:
                 break
             item = items[0]
