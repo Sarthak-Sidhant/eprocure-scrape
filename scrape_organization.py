@@ -400,12 +400,18 @@ class PortalSessionExpired(RuntimeError):
     pass
 
 
+def _is_expired(res):
+    low = res.content.lower()
+    return b'session in the client area has expired' in low or b'stale session' in low[:3000]
+
+
 def _must_not_be_expired(res, view_link):
     """The portal's 'session expired' page has no tender data. Storing it as the tender would look like a success (2026-10-16:
     thousands of empty records), so a page that is still expired after a fresh login fails the tender and it is retried later."""
-    if b'session in the client area has expired' in res.content.lower():
+    low = res.content.lower()
+    if b'session in the client area has expired' in low or b'stale session' in low[:3000]:   # the portal has two wordings for it
         bump("expired_after_relogin")
-        raise PortalSessionExpired(f"portal still says 'session expired' after a fresh login ({view_link[-40:]})")
+        raise PortalSessionExpired(f"portal still says 'session expired' / 'Stale Session' after a fresh login ({view_link[-40:]})")
 
 
 def fetch_tender_details(view_link, tender_id, org_id='684', output_dir=None, from_date="", to_date=""):
@@ -422,7 +428,7 @@ def fetch_tender_details(view_link, tender_id, org_id='684', output_dir=None, fr
 
     # 1. Access Page 0 (Tender Status overview page)
     res0 = safe_request(session, 'GET', view_link)
-    if b'session in the client area has expired' in res0.content.lower():
+    if _is_expired(res0):
         session = renew_thread_session(org_id=org_id, output_dir=output_dir, from_date=from_date, to_date=to_date)
         res0 = safe_request(session, 'GET', view_link)
 
@@ -444,7 +450,7 @@ def fetch_tender_details(view_link, tender_id, org_id='684', output_dir=None, fr
 
     # 3. Access Page 1 (Tender Details)
     res1 = safe_request(session, 'GET', link_page1)
-    if b'session in the client area has expired' in res1.content.lower():
+    if _is_expired(res1):
         session = renew_thread_session(org_id=org_id, output_dir=output_dir, from_date=from_date, to_date=to_date)
         safe_request(session, 'GET', view_link)
         res1 = safe_request(session, 'GET', link_page1)
@@ -454,7 +460,7 @@ def fetch_tender_details(view_link, tender_id, org_id='684', output_dir=None, fr
 
     # 4. Access Page 2 (Tender Summary Reports)
     res2 = safe_request(session, 'GET', link_page2)
-    if b'session in the client area has expired' in res2.content.lower():
+    if _is_expired(res2):
         session = renew_thread_session(org_id=org_id, output_dir=output_dir, from_date=from_date, to_date=to_date)
         safe_request(session, 'GET', view_link)
         res2 = safe_request(session, 'GET', link_page2)
