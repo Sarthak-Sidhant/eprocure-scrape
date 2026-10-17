@@ -21,6 +21,7 @@ import sections
 PROJECT = "eprocure-sections"
 TARGET = "eprocure-tenders"
 CHUNK = 100
+TODO_LIMIT = 3000   # the hub returns at most this many records per question; a bigger org-year goes back to the queue so other processes share it
 
 
 def fetch_and_parse(record_id, key, url):
@@ -39,7 +40,7 @@ def fetch_and_parse(record_id, key, url):
 def process_item(hub, item, target=TARGET, threads=8, fetch=fetch_and_parse):
     """Returns (status, error, patched)."""
     p = item["payload"]
-    todo = hub.backfill_todo(target, p["org_id"], p["year"])
+    todo = hub.backfill_todo(target, p["org_id"], p["year"], limit=TODO_LIMIT)
     patched = failed = 0
     for i in range(0, len(todo), CHUNK):
         chunk = todo[i:i + CHUNK]
@@ -53,6 +54,8 @@ def process_item(hub, item, target=TARGET, threads=8, fetch=fetch_and_parse):
             patched += len(good)
     if failed:
         return "failed", f"{failed} of {len(todo)} pages could not be read", patched
+    if len(todo) >= TODO_LIMIT:
+        return "pending", f"{patched} done, more left for another runner", patched
     return "done", "", patched
 
 

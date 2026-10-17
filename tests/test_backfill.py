@@ -10,9 +10,9 @@ class FakeHub:
     def __init__(self, todo):
         self.todo, self.patches, self.queue = todo, [], {}
 
-    def backfill_todo(self, target, org_id, year):
+    def backfill_todo(self, target, org_id, year, limit=3000):
         assert target == "eprocure-tenders"
-        return self.todo
+        return self.todo[:limit]
 
     def read_urls(self, target, keys):
         return {k: "https://example.invalid/" + k for k in keys}
@@ -64,3 +64,10 @@ def test_claim_next_waits_then_stops_when_everything_is_done():
     h, sleeps = H(), []
     assert backfill.claim_next(h, time.time() + 600, sleep=sleeps.append) == [{"key": "k"}] and len(sleeps) == 1
     assert backfill.claim_next(h, time.time() + 600, sleep=sleeps.append) == []
+
+
+def test_a_big_org_year_goes_back_to_the_queue_so_other_runners_share_it():
+    todo = [{"record_id": f"R{i}", "pages_key": f"k{i}"} for i in range(backfill.TODO_LIMIT + 50)]
+    hub = FakeHub(todo)
+    status, err, patched = backfill.process_item(hub, item(), fetch=lambda rid, key, url: (rid, {"x": 1}))
+    assert status == "pending" and patched == backfill.TODO_LIMIT and "more left" in err         # not done: the hub still lists 50 without sections
