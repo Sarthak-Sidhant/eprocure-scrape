@@ -5,8 +5,8 @@ name: GePNIC portals (seed, count, crawl)
 #   count  count every window with one search, split it until it fits, and queue the windows to scrape: count.py
 #   crawl  scrape the windows: crawl.py
 # The allocate job reads what each portal has left on the hub and spreads the runner processes over the portals by that work
-# (assign.py). When a count or crawl run ends with work left, the last job starts the next run; when counting is finished it
-# starts the crawl. A manual cancel stops the chain.
+# (assign.py). When a count or crawl run ends with work left, the last job starts the next run of the same stage. Counting never
+# starts the crawl by itself: a crawl run only does anything when started with start_crawl=true. A manual cancel stops the chain.
 on:
   workflow_dispatch:
     inputs:
@@ -36,9 +36,13 @@ on:
         description: "Crawl: cap tenders per window (0 = no limit)"
         default: "0"
       chain:
-        description: "Start the next run (or the crawl after counting) when this one ends with work left"
+        description: "Start the next run of the same stage when this one ends with work left"
         type: boolean
         default: true
+      start_crawl:
+        description: "Crawl stage only: really start the big scrape (a crawl run without this does nothing)"
+        type: boolean
+        default: false
 
 permissions:
   actions: write
@@ -74,7 +78,7 @@ jobs:
     name: Spread processes over the portals
     needs: seed
     # a portal that fails to seed (down, or refusing us) must not hold up the others: count what was seeded, seed the rest later
-    if: ${{ !cancelled() && (inputs.stage != 'seed' || (inputs.chain && (needs.seed.result == 'success' || needs.seed.result == 'failure'))) }}
+    if: ${{ !cancelled() && (inputs.stage != 'crawl' || inputs.start_crawl) && (inputs.stage != 'seed' || (inputs.chain && (needs.seed.result == 'success' || needs.seed.result == 'failure'))) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
@@ -175,9 +179,8 @@ jobs:
           STAGE: ${{ needs.allocate.outputs.stage }}
         run: |
           left=$(python assign.py --hub --stage "$STAGE" --slots 1 --only "${{ inputs.portals }}" | python -c "import json,sys; print(len(json.load(sys.stdin)['left']))")
-          next="$STAGE"
-          if [ "$left" = 0 ] && [ "$STAGE" = count ]; then next=crawl; fi
-          if [ "$left" = 0 ] && [ "$STAGE" = crawl ]; then echo "every portal is done"; exit 0; fi
-          echo "$left portals still have $STAGE work: starting a $next run"
-          gh workflow run gepnic.yml -f stage="$next" -f portals="${{ inputs.portals }}" -f total_jobs="${{ inputs.total_jobs }}" -f procs="${{ inputs.procs }}" \
-            -f per_server="${{ inputs.per_server }}" -f documents="${{ inputs.documents }}" -f max_items=0 -f max_tenders=0 -f chain=true
+          if [ "$left" = 0 ]; then echo "every portal is done with $STAGE"; [ "$STAGE" = count ] && echo "counting finished: start the crawl with stage=crawl start_crawl=true when ready"; exit 0; fi
+          echo "$left portals still have $STAGE work: starting another $STAGE run"
+          gh workflow run gepnic.yml -f stage="$STAGE" -f portals="${{ inputs.portals }}" -f total_jobs="${{ inputs.total_jobs }}" -f procs="${{ inputs.procs }}" \
+            -f per_server="${{ inputs.per_server }}" -f documents="${{ inputs.documents }}" -f max_items=0 -f max_tenders=0 -f chain=true \
+            -f start_crawl="${{ inputs.start_crawl }}"
