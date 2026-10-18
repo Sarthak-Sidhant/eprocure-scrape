@@ -72,6 +72,9 @@ Projects in the hub: `eprocure-tenders` (the real data), `eprocure-sections` (th
    table as CSV; add a bytes-received counter in the crawler; delete the `eprocure-eval` data; dashboard panel for the backfill.
 5. **Unverified**: the end-of-run restart job (never ran to completion), the `/explore` and `/tender` pages in a real browser.
 
+## Slicing a portal: Criteria I or II
+See `docs/CRITERIA-HANDOFF.md` (assessment, evidence, risks, gates for the 26 new portals) and `tools/criteria_probe.py` (count, status totals, page a window, print the form on any GePNIC portal).
+
 ## Ideas for the next chat
 - Analysis on the data you now have: spend by organisation, awards (AOC) linked to tenders, bidders per tender, timelines from publish to
   award, using the typed views in the `eprocure` schema.
