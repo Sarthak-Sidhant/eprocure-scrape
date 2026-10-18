@@ -1,0 +1,36 @@
+name: Load balancer probe (GePNIC portals)
+
+# Runs on a push to the lb-probe branch only: 20 runners (20 egress IPs) each send about 4 cookie-less requests to every portal and
+# record which backend answered. Light by design; see tools/lb_probe.py.
+on:
+  push:
+    branches: [lb-probe]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        job: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q requests
+      - name: Stagger start
+        run: sleep $(( ${{ matrix.job }} * 6 ))
+      - name: Probe
+        env:
+          JOB_INDEX: ${{ matrix.job }}
+        run: python tools/lb_probe.py --out probe-${{ matrix.job }}.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: probe-${{ matrix.job }}
+          path: probe-${{ matrix.job }}.json
