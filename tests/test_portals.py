@@ -75,3 +75,11 @@ def test_allocation_gives_every_portal_a_process_and_caps_each_server():
     assert alloc["wbtenders.gov.in"] >= alloc["sikkimtender.gov.in"]
     slots = assign.order(alloc, ps)
     assert len(slots) == 80 and slots[0] == ps[0]["portal"]
+
+
+def test_only_the_organisation_dropdown_counts_as_organisations():
+    import orgs
+    html = """<form><select name="ProductCategory"><option value="0">-Select-</option><option value="63">Pumps/Motors</option></select>
+              <select name="OrganName"><option value="0">-Select-</option><option value="3">Buildings and Housing Department</option>
+              <option value="7">Rural Development</option></select></form>"""
+    assert orgs.parse_options(html) == {"3": "Buildings and Housing Department", "7": "Rural Development"}

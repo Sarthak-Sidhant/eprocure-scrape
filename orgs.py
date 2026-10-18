@@ -14,15 +14,22 @@ def live_options():
     s = requests.Session()
     s.headers["User-Agent"] = UA
     portal.cookie(s)
-    html = s.get(SEARCH_URL, timeout=30).text
-    out = {}
-    for sel in BeautifulSoup(html, "html.parser").find_all("select"):
-        for o in sel.find_all("option"):
-            v = (o.get("value") or "").strip()
-            if v.isdigit():
-                out[v] = o.text.strip()
+    out = parse_options(s.get(SEARCH_URL, timeout=30).text)
     if len(out) < portal.MIN_ORGS:
         raise RuntimeError(f"organisation dropdown looks wrong ({len(out)} options)")
+    return out
+
+
+def parse_options(html):
+    """{org_id: label} from the search form's organisation dropdown."""
+    out = {}
+    # only the organisation list: the form has other numeric dropdowns too (product category, form of contract, ...), and searching
+    # with one of their ids as an "organisation" returns every tender on the portal
+    sel = BeautifulSoup(html, "html.parser").find("select", attrs={"name": "OrganName"})
+    for o in (sel.find_all("option") if sel else []):
+        v = (o.get("value") or "").strip()
+        if v.isdigit() and v != "0":
+            out[v] = o.text.strip()
     return out
 
 
