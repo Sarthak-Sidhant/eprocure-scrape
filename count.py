@@ -74,9 +74,12 @@ def should_idle(hub, index):
     return bool(s.get("paused")) or index >= int(s.get("threads", 4))
 
 
+ALL_DONE = threading.Event()   # set when a worker finds the queue empty, so workers sitting out (above the threads setting) stop too
+
+
 def worker(hub, args, deadline, counter, seen, lock, index=0):
     idle_since = None
-    while time.time() < deadline and not (args.max_items and counter[0] >= args.max_items):
+    while time.time() < deadline and not (args.max_items and counter[0] >= args.max_items) and not ALL_DONE.is_set():
         if should_idle(hub, index):
             time.sleep(2)
             continue
@@ -87,9 +90,11 @@ def worker(hub, args, deadline, counter, seen, lock, index=0):
         if not items:
             # Other runners may still be counting windows that turn into new work, so wait while anything is in flight.
             if hub.queue.get("claimed", 0) == 0 and hub.queue.get("pending", 0) == 0:
+                ALL_DONE.set()
                 return
             idle_since = idle_since or time.time()
             if time.time() - idle_since > 20 * 60:
+                ALL_DONE.set()
                 return
             time.sleep(10)
             continue
