@@ -36,6 +36,7 @@ _seen = {}
 _seen_lock = threading.Lock()
 
 MAX_POOL = 32  # most portal requests in flight at once; the hub's `threads` setting decides how many run
+SHORT_ACCEPT_AFTER = 4   # tries before a window that lists fewer than the plan's count is accepted as it is
 COMPLETE_FRACTION = 0.98  # a window with at least this share of its planned tenders stored is treated as complete
 WORKERS = 2 * MAX_POOL   # worker threads: the spare ones upload and parse while the gated ones talk to the portal
 
@@ -183,6 +184,7 @@ def list_pages(org_id, out_dir, max_tenders, retries, from_date, to_date):
     s.headers.update({"User-Agent": so.USER_AGENT, "Accept-Language": "en-US,en;q=0.5"})
     html = so.fetch_search_page(s, org_id=org_id, max_retries=retries, output_dir=out_dir, from_date=from_date, to_date=to_date)
     seen = 0
+    pages_seen = 0
     while True:
         rows, nxt = so.parse_results_page(html)
         if max_tenders:
@@ -192,6 +194,9 @@ def list_pages(org_id, out_dir, max_tenders, retries, from_date, to_date):
         if not nxt or (max_tenders and seen >= max_tenders):
             return
         html = so.safe_request(s, "GET", nxt).text
+        if 'id="tabList"' not in html:      # an error or expired page where the next results page should be: not the end of the list
+            raise RuntimeError(f"results page {pages_seen + 2} came back without a results table after {seen} tenders (portal error or expired session)")
+        pages_seen += 1
         time.sleep(0.4)
 
 
@@ -377,6 +382,10 @@ def crawl_org(hub, item, args, deadline, gate):
     if state["failed"]:
         return "failed", f"{state['failed']} of {todo_n} tender pages failed", state["ok"] + skipped
     if short:
+        # Checked on 18 Oct: for 14 windows that had stopped at "30 of 1172" the portal still listed the full count, so a short
+        # listing is almost always a truncated one. Retry it; only after a few tries accept it as the portal's real count.
+        if item.get("attempts", 1) < SHORT_ACCEPT_AFTER:
+            return "failed", f"listed {listed} of {expected} expected: retrying", state["ok"] + skipped
         return "done", f"listed {listed} of {expected} expected", state["ok"] + skipped
     return "done", "", state["ok"] + skipped
 

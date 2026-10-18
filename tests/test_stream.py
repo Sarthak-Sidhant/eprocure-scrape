@@ -97,11 +97,11 @@ def test_listing_error_still_processes_what_was_listed(monkeypatch):
 
 
 def test_list_pages_yields_page_by_page_and_honours_the_cap(monkeypatch):
-    html = {"first": "p0", "n1": "p1", "n2": "p2"}
-    nxt = {"p0": ("n1"), "p1": ("n2"), "p2": None}
-    monkeypatch.setattr(crawl.so, "fetch_search_page", lambda *a, **k: "p0")
-    monkeypatch.setattr(crawl.so, "parse_results_page", lambda h: (rows(int(h[1])), nxt[h]))
-    monkeypatch.setattr(crawl.so, "safe_request", lambda s, m, url: SimpleNamespace(text={"n1": "p1", "n2": "p2"}[url]))
+    page = lambda i: f'<table id="tabList"></table>p{i}'
+    nxt = {0: "n1", 1: "n2", 2: None}
+    monkeypatch.setattr(crawl.so, "fetch_search_page", lambda *a, **k: page(0))
+    monkeypatch.setattr(crawl.so, "parse_results_page", lambda h: (rows(int(h[-1])), nxt[int(h[-1])]))
+    monkeypatch.setattr(crawl.so, "safe_request", lambda s, m, url: SimpleNamespace(text={"n1": page(1), "n2": page(2)}[url]))
     monkeypatch.setattr(crawl.time, "sleep", lambda s: None)
     got = list(crawl.list_pages("1", "/tmp", 0, 1, "a", "b"))
     assert [len(r) for r in got] == [10, 10, 10]
@@ -146,3 +146,34 @@ def test_claim_next_gives_up_at_the_deadline_and_honours_a_pause():
         calls.append(s)
         paused.settings["paused"] = False
     assert crawl.claim_next(paused, time.time() + 600, sleep=sleep) == [{"key": "x"}] and calls == [5]
+
+
+def test_a_results_page_without_a_table_is_an_error_not_the_end_of_the_list(monkeypatch):
+    calls = {"n": 0}
+    monkeypatch.setattr(crawl.so, "fetch_search_page", lambda *a, **k: '<table id="tabList">p0</table>')
+    monkeypatch.setattr(crawl.so, "parse_results_page", lambda h: (rows(0), "next") if "tabList" in h else ([], None))
+    monkeypatch.setattr(crawl.so, "safe_request", lambda s, m, url: SimpleNamespace(text="<html>session expired</html>"))
+    monkeypatch.setattr(crawl.time, "sleep", lambda s: None)
+    got = []
+    try:
+        for page in crawl.list_pages("1", "/tmp", 0, 1, "a", "b"):
+            got.append(len(page))
+        raise AssertionError("the listing ended silently")
+    except RuntimeError as e:
+        assert "without a results table after 10 tenders" in str(e) and got == [10]
+
+
+def test_a_short_listing_is_retried_and_only_accepted_after_a_few_tries(monkeypatch):
+    monkeypatch.setattr(crawl, "label_matches", lambda *a: True)
+    monkeypatch.setattr(crawl, "list_pages", lambda *a, **k: iter([rows(0, 10)]))
+    monkeypatch.setattr(crawl, "fetch_pooled", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no portal")))
+    first = crawl.crawl_org(FakeHub(), {**item(100), "attempts": 1}, args(), time.time() + 60, crawl.Gate(4))
+    assert first[0] == "failed"
+    monkeypatch.setattr(crawl, "list_pages", lambda *a, **k: iter([rows(0, 10)]))
+    monkeypatch.setattr(crawl, "fetch_pooled", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no portal")))
+    # tender pages fail in this fake, which also fails the window; what matters is the short-listing branch below
+    monkeypatch.setattr(crawl, "not_yet_stored", lambda hub, rows_, rescrape=False: ([], len(rows_)))
+    again = crawl.crawl_org(FakeHub(), {**item(100), "attempts": 1}, args(), time.time() + 60, crawl.Gate(4))
+    assert again[0] == "failed" and "retrying" in again[1]
+    late = crawl.crawl_org(FakeHub(), {**item(100), "attempts": 4}, args(), time.time() + 60, crawl.Gate(4))
+    assert late[0] == "done" and "listed 10 of 100" in late[1]
