@@ -9,6 +9,7 @@ documents (PDF summaries, comparative charts, BOQ evaluations).
 """
 
 import argparse
+
 import base64
 import json
 import os
@@ -39,6 +40,7 @@ USER_AGENT = (
 
 # Counters the crawler reports to scrape-hub as metrics (names: a-z 0-9 _ -). Drained by crawl.sync_metrics().
 from collections import Counter
+import portal  # noqa: E402
 METRICS = Counter()
 _metrics_lock = threading.Lock()
 
@@ -164,10 +166,10 @@ def fetch_search_page(session, org_id='684', max_retries=10, output_dir=None, fr
     Supports optional publication date filtering (DD/MM/YYYY).
     Returns the HTML content of the search results page.
     """
-    search_url = 'https://eprocure.gov.in/eprocure/app?page=WebTenderStatusLists&service=page'
+    search_url = portal.SEARCH_URL
 
     for attempt in range(max_retries):
-        print(f"[*] Accessing eprocure search page (attempt {attempt + 1}/{max_retries})...")
+        print(f"[*] Accessing {portal.HOST} search page (attempt {attempt + 1}/{max_retries})...")
         response = safe_request(session, 'GET', search_url)
 
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -235,11 +237,11 @@ def fetch_search_page(session, org_id='684', max_retries=10, output_dir=None, fr
 
                 payload.append((field, ''))
 
-        action_path = form.get('action', '/eprocure/app')
-        action_url = urllib.parse.urljoin("https://eprocure.gov.in", action_path)
+        action_path = form.get('action', portal.APP_PATH)
+        action_url = urllib.parse.urljoin(portal.ORIGIN, action_path)
 
         session.headers.update({
-            'Origin': 'https://eprocure.gov.in',
+            'Origin': portal.ORIGIN,
             'Referer': search_url,
             'Content-Type': 'application/x-www-form-urlencoded'
         })
@@ -291,7 +293,7 @@ def get_thread_session(org_id='684', output_dir=None, from_date="", to_date=""):
         session.mount('https://', adapter)
         session.mount('http://', adapter)
 
-        session.cookies.set("cookieWorked", "yes", domain="eprocure.gov.in", path="/")
+        portal.cookie(session)
         session.headers.update({
             'User-Agent': USER_AGENT,
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -352,7 +354,7 @@ def parse_results_page(html):
         view_link = None
         a_tag = cells[5].find('a', href=True)
         if a_tag and 'sp=' in a_tag['href']:
-            view_link = urllib.parse.urljoin("https://eprocure.gov.in", a_tag['href'].replace('&amp;', '&'))
+            view_link = portal.url(a_tag['href'])
 
         tenders.append({
             'sno': sno,
@@ -368,9 +370,9 @@ def parse_results_page(html):
     next_link = soup.find('a', id='loadNext')
     next_url = None
     if next_link and next_link.get('href'):
-        next_url = urllib.parse.urljoin("https://eprocure.gov.in", next_link['href'].replace('&amp;', '&'))
+        next_url = portal.url(next_link['href'])
     elif next_link:
-        next_url = "https://eprocure.gov.in/eprocure/app?component=loadNext&page=WebTenderStatusLists&service=direct&session=T"
+        next_url = portal.app_url("component=loadNext&page=WebTenderStatusLists&service=direct&session=T")
 
     return tenders, next_url
 
@@ -441,12 +443,12 @@ def fetch_tender_details(view_link, tender_id, org_id='684', output_dir=None, fr
 
     # Fallback to standard DirectLink endpoints if not found
     if not link_page1:
-        link_page1 = "https://eprocure.gov.in/eprocure/app?component=%24DirectLink&page=WebTenderStatus&service=direct&session=T"
-    link_page1 = urllib.parse.urljoin("https://eprocure.gov.in", link_page1.replace('&amp;', '&'))
+        link_page1 = portal.app_url("component=%24DirectLink&page=WebTenderStatus&service=direct&session=T")
+    link_page1 = portal.url(link_page1)
 
     if not link_page2:
-        link_page2 = "https://eprocure.gov.in/eprocure/app?component=%24DirectLink_0&page=WebTenderStatus&service=direct&session=T"
-    link_page2 = urllib.parse.urljoin("https://eprocure.gov.in", link_page2.replace('&amp;', '&'))
+        link_page2 = portal.app_url("component=%24DirectLink_0&page=WebTenderStatus&service=direct&session=T")
+    link_page2 = portal.url(link_page2)
 
     # 3. Access Page 1 (Tender Details)
     res1 = safe_request(session, 'GET', link_page1)
@@ -524,7 +526,7 @@ def fetch_tender_details(view_link, tender_id, org_id='684', output_dir=None, fr
 
         # Capture report summaries and comparative charts, excluding individual numeric bidder links
         if (is_pdf_ext or is_print_page or is_boq or is_summary_report) and not text.isdigit():
-            clean_href = urllib.parse.urljoin("https://eprocure.gov.in", href.replace('&amp;', '&'))
+            clean_href = portal.url(href)
 
             if is_boq:
                 filename = "BOQ_Comparative_Chart.pdf"
@@ -598,8 +600,8 @@ def download_tender_pdfs(tender_id, view_link, pdf_list, output_dir, org_id='684
             break
 
     if not link_page2:
-        link_page2 = "https://eprocure.gov.in/eprocure/app?component=%24DirectLink_0&page=WebTenderStatus&service=direct&session=T"
-    link_page2 = urllib.parse.urljoin("https://eprocure.gov.in", link_page2.replace('&amp;', '&'))
+        link_page2 = portal.app_url("component=%24DirectLink_0&page=WebTenderStatus&service=direct&session=T")
+    link_page2 = portal.url(link_page2)
 
     # 3. Access Page 2 (activates summary reports and direct link session scope)
     try:
@@ -868,7 +870,7 @@ def main():
         adapter = HTTPAdapter(pool_connections=10, pool_maxsize=10, max_retries=3)
         session.mount('https://', adapter)
         session.mount('http://', adapter)
-        session.cookies.set("cookieWorked", "yes", domain="eprocure.gov.in", path="/")
+        portal.cookie(session)
         session.headers.update({
             'User-Agent': USER_AGENT,
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',

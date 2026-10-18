@@ -6,6 +6,7 @@ fetches the status/details/summary pages for each, and uploads one record per te
 are not downloaded; the metadata and links are stored in the record.
 """
 import argparse
+
 import contextlib
 import os
 import random
@@ -29,6 +30,7 @@ import parsing  # noqa: E402
 import sections  # noqa: E402
 import scrape_organization as so  # noqa: E402
 from plan import TENDERS  # noqa: E402
+import portal  # noqa: E402
 
 PROJECT = os.environ.get("SCRAPE_PROJECT") or TENDERS   # speed experiments use a separate project so they never touch the real data
 
@@ -180,7 +182,7 @@ def list_pages(org_id, out_dir, max_tenders, retries, from_date, to_date):
     the whole window has been listed."""
     s = requests.Session()
     s.mount("https://", HTTPAdapter(pool_connections=4, pool_maxsize=4, max_retries=3))
-    s.cookies.set("cookieWorked", "yes", domain="eprocure.gov.in", path="/")
+    portal.cookie(s)
     s.headers.update({"User-Agent": so.USER_AGENT, "Accept-Language": "en-US,en;q=0.5"})
     html = so.fetch_search_page(s, org_id=org_id, max_retries=retries, output_dir=out_dir, from_date=from_date, to_date=to_date)
     seen = 0
@@ -293,7 +295,9 @@ def crawl_org(hub, item, args, deadline, gate):
                 names = [f"{t['tender_id']}_{e['name']}" for e in entries]
                 fields, proc, outcomes = parsing.parse_tender(t["tender_id"], org_id, name, dj, page0, page1, summary_html, names)
                 outcomes.pop("bids_list", None)                       # already stored once, as details["bids"]
-                details["fields"], details["procurement_details"], details["outcomes"] = fields, proc, outcomes
+                details["fields"], details["outcomes"] = fields, outcomes
+                if portal.LEGACY:      # the old flat key/value dump; `sections` and `fields` hold the same, and the raw pages are in storage
+                    details["procurement_details"] = proc
                 hub.clear_failure("parse", t["tender_id"])
             except Exception as pe:
                 details["parse_error"] = f"{type(pe).__name__}: {str(pe)[:200]}"

@@ -3,6 +3,7 @@
 The results page footer carries "Total records: N", so no paging is needed.
 """
 import re
+
 import tempfile
 
 import requests
@@ -10,6 +11,7 @@ from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
 
 import scrape_organization as so
+import portal  # noqa: E402
 
 
 def parse_total(html):
@@ -31,7 +33,7 @@ def parse_total(html):
 def window_count(org_id, from_date, to_date, retries=10):
     s = requests.Session()
     s.mount("https://", HTTPAdapter(pool_connections=2, pool_maxsize=2, max_retries=3))
-    s.cookies.set("cookieWorked", "yes", domain="eprocure.gov.in", path="/")
+    portal.cookie(s)
     s.headers.update({"User-Agent": so.USER_AGENT, "Accept-Language": "en-US,en;q=0.5"})
     html = so.fetch_search_page(s, org_id=str(org_id), max_retries=retries, output_dir=tempfile.gettempdir(),
                                 from_date=from_date, to_date=to_date)

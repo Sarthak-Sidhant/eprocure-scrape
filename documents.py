@@ -16,7 +16,9 @@ import io
 
 from bs4 import BeautifulSoup
 
-BASE = "https://eprocure.gov.in"
+import portal
+
+BASE = portal.ORIGIN
 DOC_EXT = (".pdf", ".xls", ".xlsx", ".zip", ".rar", ".doc", ".docx", ".jpg", ".jpeg", ".png", ".txt", ".csv", ".tif", ".tiff")
 SIZE_RE = re.compile(r"\(\s*([\d.,]+)\s*(B|KB|MB|GB)\s*\)", re.I)
 UNIT = {"B": 1, "KB": 1024, "MB": 1024 ** 2, "GB": 1024 ** 3}
@@ -160,9 +162,12 @@ def safe_part(s):
 
 
 def tender_prefix(tender_id, org_id):
-    """year/org/tender, e.g. 2018/204/2018_NTA_366797_1. Tender ids start with their year."""
+    """year/org/tender, e.g. 2018/204/2018_NTA_366797_1. Tender ids start with their year. eprocure.gov.in keeps the portal's dropdown id
+    as the folder (what it has always used); other portals use the organisation code from the tender id, which does not shift when the
+    portal adds organisations (2019_DRDO_875304_1 -> DRDO)."""
     year = tender_id[:4] if tender_id[:4].isdigit() else "unknown"
-    return f"{year}/{safe_part(str(org_id))}/{safe_part(tender_id)}"
+    org = org_id if portal.LEGACY else (tender_id.split("_")[1] if tender_id.count("_") >= 2 else org_id)
+    return f"{year}/{safe_part(str(org))}/{safe_part(tender_id)}"
 
 
 def pages_bundle(status_html, details_html, summary_html):
