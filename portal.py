@@ -43,6 +43,10 @@ TENDERS = "eprocure-tenders" if LEGACY else f"gepnic-{slug(NAME)}"
 PLAN = "eprocure-plan" if LEGACY else f"gepnic-{slug(NAME)}-plan"
 PROBE = "eprocure" if LEGACY else f"gepnic:{NAME}"   # the hub's uptime check for this portal; runners hold while it fails
 MIN_ORGS = 500 if LEGACY else 1                      # sanity check on the organisation dropdown
+# Portals whose certificate chain fails to verify from GitHub's runners ("self-signed certificate in certificate chain"), though it
+# verifies from the hub host. These are public pages and nothing secret is sent to them, so the check is skipped for them only.
+INSECURE_TLS = {"iocletenders.nic.in", "assamtenders.gov.in", "tenders.ladakh.gov.in", "nagalandtenders.gov.in"}
+VERIFY = NAME not in INSECURE_TLS and os.environ.get("PORTAL_INSECURE_TLS") != "1"
 
 
 def url(href):
@@ -55,4 +59,9 @@ def app_url(query):
 
 
 def cookie(session):
+    """Prepare a requests session for this portal (every scraper session passes through here)."""
     session.cookies.set("cookieWorked", "yes", domain=HOST, path="/")
+    if not VERIFY:
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        session.verify = False

@@ -73,7 +73,8 @@ jobs:
   allocate:
     name: Spread processes over the portals
     needs: seed
-    if: ${{ !cancelled() && inputs.stage != 'seed' || (inputs.stage == 'seed' && needs.seed.result == 'success' && inputs.chain) }}
+    # a portal that fails to seed (down, or refusing us) must not hold up the others: count what was seeded, seed the rest later
+    if: ${{ !cancelled() && (inputs.stage != 'seed' || (inputs.chain && (needs.seed.result == 'success' || needs.seed.result == 'failure'))) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
