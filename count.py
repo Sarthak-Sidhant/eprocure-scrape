@@ -86,10 +86,10 @@ def worker(hub, args, deadline, counter, seen, lock, index=0):
         delay = hub.settings.get("delay_ms", 0)
         if delay:
             time.sleep(delay / 1000)
-        items = hub.claim(1, steal=True)
+        items = hub.claim(1, steal=True, retry_failed=True)   # failed counts come back after a few minutes (never while the portal is down)
         if not items:
             # Other runners may still be counting windows that turn into new work, so wait while anything is in flight.
-            if hub.queue.get("claimed", 0) == 0 and hub.queue.get("pending", 0) == 0:
+            if hub.queue.get("claimed", 0) == 0 and hub.queue.get("pending", 0) == 0 and hub.queue.get("retry", 0) == 0:
                 ALL_DONE.set()
                 return
             idle_since = idle_since or time.time()
