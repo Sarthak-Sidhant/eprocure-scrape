@@ -125,3 +125,17 @@ experiment log; this file pulls the whole story together.
 - Compare stored tenders per window against the plan and report every window that is short.
 - Optional: count bytes received per request in the crawler; save the month-by-month refused table as a CSV.
 - Unverified: the restart job at the end of a run, and the explorer page in a real browser.
+
+## Update, 17 to 18 Oct (after the first version of this file)
+- **Auto-retry**: runs now stay up until every window is done; failed windows come back after 3 minutes (never while the portal is down,
+  at most 40 tries); a final job restarts the workflow if work remains. `min_threads` keeps a floor; `http_error` counts in auto-backoff.
+- **Fetch while listing** and **skip windows already complete** (stored >= 98% of the plan) are in; they help the tail little because 242
+  of the 311 remaining windows had nothing stored when the portal was down.
+- **Tender document lists**: `sections.py` parses the NIT and work-item document tables, covers, payment instruments and corrigenda from
+  the saved details page (382 sampled pages from 2011 to 2026, 0 failures). Backfilled on all 847,691 stored records using the runners
+  (about 41,500 records/min, no portal traffic). The crawler now writes them for new tenders. These documents have no download links.
+- **New finding**: 1,785 captures (801 with a title) were the portal's *"Stale Session"* page, a second wording for expired sessions the
+  crawler did not detect. Fixed in the crawler and the hub; their 160 windows are back in the queue.
+- **Documents downloaded**: 1,572,905 files stored (673 GB), 734,337 refused, 695 failed; 502,050 of 847,878 tenders have at least one file.
+- **New pages**: `/explore` (rate and outage chart you can zoom), `/tender` (look up one tender), `/reports/` (saved charts).
+- Where to pick up: see `docs/HANDOFF.md`.
