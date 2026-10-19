@@ -11,14 +11,18 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import parsing  # noqa: E402
 
-INTS = {"no_of_covers", "bid_validity_days", "period_of_work_days", "bids_count", "qualified_bids_count", "has_boq_chart", "has_tech_summary"}
-NUMS = {"tender_fee", "emd_amount", "emd_percentage", "tender_value", "awarded_value"}
+INTS = {"no_of_covers", "bid_validity_days", "period_of_work_days", "bids_count", "qualified_bids_count", "has_boq_chart", "has_tech_summary", "priced_bidders"}
+NUMS = {"tender_fee", "emd_amount", "emd_percentage", "tender_value", "awarded_value", "contract_value_aoc_total", "awarded_value_sum", "l1_bid_value"}
+JSONS = {"winners", "stage_done", "date_flags"}        # kept as JSON arrays
+BOOLS = {"l1_inferred"}
 DATES = {"pre_bid_meeting_date", "published_date", "bid_opening_date", "bid_download_start_date", "bid_download_end_date",
-         "clarification_start_date", "clarification_end_date", "bid_submission_start_date", "bid_submission_end_date", "award_date"}
+         "clarification_start_date", "clarification_end_date", "bid_submission_start_date", "bid_submission_end_date", "award_date",
+         "financial_bid_opening_date"}
 RENAMED_DATES = {"published_date": "published_at", "bid_opening_date": "bid_opening_at", "bid_download_start_date": "bid_download_start_at",
                  "bid_download_end_date": "bid_download_end_at", "clarification_start_date": "clarification_start_at",
                  "clarification_end_date": "clarification_end_at", "bid_submission_start_date": "bid_submission_start_at",
-                 "bid_submission_end_date": "bid_submission_end_at", "pre_bid_meeting_date": "pre_bid_meeting_at", "award_date": "awarded_at"}
+                 "bid_submission_end_date": "bid_submission_end_at", "pre_bid_meeting_date": "pre_bid_meeting_at", "award_date": "awarded_at",
+                 "financial_bid_opening_date": "financial_bid_opening_at"}
 
 
 def col(c):
@@ -29,6 +33,10 @@ def col(c):
         return f"  eprocure.num({src}) AS {c}"
     if c in DATES:
         return f"  eprocure.ts({src}) AS {RENAMED_DATES[c]}"
+    if c in JSONS:
+        return f"  r.data->'details'->'fields'->'{c}' AS {c}"
+    if c in BOOLS:
+        return f"  ({src})::boolean AS {c}"
     return f"  {src} AS {c}"
 
 
@@ -52,7 +60,9 @@ BEGIN
 EXCEPTION WHEN others THEN RETURN NULL;
 END $$;
 """)
-    print("CREATE OR REPLACE VIEW eprocure.tenders AS\nSELECT\n  r.record_id AS tender_id,\n  r.data->>'org_id' AS org_id,\n  r.data->>'org_name' AS org_name,")
+    print("-- dropped and recreated (not replaced) so new parser columns can sit before the window columns; nothing depends on this view")
+    print("DROP VIEW IF EXISTS eprocure.tenders;")
+    print("CREATE VIEW eprocure.tenders AS\nSELECT\n  r.record_id AS tender_id,\n  r.data->>'org_id' AS org_id,\n  r.data->>'org_name' AS org_name,")
     print(",\n".join(col(c) for c in fields) + ",")
     print("""  r.data->'window'->>0 AS window_from,
   r.data->'window'->>1 AS window_to,

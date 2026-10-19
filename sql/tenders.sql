@@ -16,7 +16,9 @@ BEGIN
 EXCEPTION WHEN others THEN RETURN NULL;
 END $$;
 
-CREATE OR REPLACE VIEW eprocure.tenders AS
+-- dropped and recreated (not replaced) so new parser columns can sit before the window columns; nothing depends on this view
+DROP VIEW IF EXISTS eprocure.tenders;
+CREATE VIEW eprocure.tenders AS
 SELECT
   r.record_id AS tender_id,
   r.data->>'org_id' AS org_id,
@@ -80,6 +82,19 @@ SELECT
   eprocure.ts(r.data->'details'->'fields'->>'award_date') AS awarded_at,
   (r.data->'details'->'fields'->>'has_boq_chart')::int AS has_boq_chart,
   (r.data->'details'->'fields'->>'has_tech_summary')::int AS has_tech_summary,
+  eprocure.ts(r.data->'details'->'fields'->>'financial_bid_opening_date') AS financial_bid_opening_at,
+  eprocure.num(r.data->'details'->'fields'->>'contract_value_aoc_total') AS contract_value_aoc_total,
+  r.data->'details'->'fields'->>'aoc_currency' AS aoc_currency,
+  eprocure.num(r.data->'details'->'fields'->>'awarded_value_sum') AS awarded_value_sum,
+  r.data->'details'->'fields'->'winners' AS winners,
+  (r.data->'details'->'fields'->>'priced_bidders')::int AS priced_bidders,
+  r.data->'details'->'fields'->>'l1_bidder_name' AS l1_bidder_name,
+  eprocure.num(r.data->'details'->'fields'->>'l1_bid_value') AS l1_bid_value,
+  r.data->'details'->'fields'->>'l1_rank_raw' AS l1_rank_raw,
+  (r.data->'details'->'fields'->>'l1_inferred')::boolean AS l1_inferred,
+  r.data->'details'->'fields'->'stage_done' AS stage_done,
+  r.data->'details'->'fields'->>'last_stage_completed' AS last_stage_completed,
+  r.data->'details'->'fields'->'date_flags' AS date_flags,
   r.data->'window'->>0 AS window_from,
   r.data->'window'->>1 AS window_to,
   r.data->'details'->>'pages_key' AS pages_key,

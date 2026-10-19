@@ -272,13 +272,16 @@ def crawl_org(hub, item, args, deadline, gate):
                 raise RuntimeError("no details parsed")
             details.pop("pdf_documents", None)
             prefix = documents.tender_prefix(t["tender_id"], org_id)
+            # every fetch gets its own key (never overwrite an earlier capture); the hub keeps earlier keys in details.pages_history
+            pages_path = f"pages/{prefix}__{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}.json.gz"
             files, entries = [], []
             if args.store:
-                files.append((f"pages/{prefix}.json.gz", documents.pages_bundle(page0, page1, summary_html), "application/gzip"))
-            for d, content, v, err in fetched:
+                files.append((pages_path, documents.pages_bundle(page0, page1, summary_html), "application/gzip"))
+            for n_doc, (d, content, v, err) in enumerate(fetched, 1):
                 e = {"name": d["name"], "kind": d["kind"], "declared_bytes": d["declared_bytes"]}
                 if v and v["ok"] and args.store:
-                    path = f"docs/{prefix}/{documents.safe_part(v['filename'])}"
+                    # numbered, so two documents with the same file name on one tender cannot overwrite each other
+                    path = f"docs/{prefix}/{n_doc:02d}_{documents.safe_part(v['filename'])}"
                     files.append((path, content, documents.MIME.get(v["content_type"], "application/octet-stream")))
                     e.update(status="stored", content_type=v["content_type"], bytes=v["bytes"], sha256=v["sha256"], size_ok=v["size_ok"], _path=path)
                     so.bump("doc_stored")
@@ -312,7 +315,8 @@ def crawl_org(hub, item, args, deadline, gate):
                     uploaded = hub.upload_many(files)
                 done = {u["path"]: u for u in uploaded}   # raises if an upload keeps failing, which fails this tender so it is retried
                 if args.store:
-                    details["pages_key"] = done[f"pages/{prefix}.json.gz"]["key"]
+                    details["pages_key"] = done[pages_path]["key"]
+                    details["fetched_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
                 for e in entries:
                     if e.get("_path"):
                         e["key"] = done[e["_path"]]["key"]
