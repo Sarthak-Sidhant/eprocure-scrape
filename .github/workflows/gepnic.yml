@@ -26,9 +26,9 @@ on:
         description: "Most processes on one portal server"
         default: "8"
       documents:
-        description: "Crawl: also download each tender's documents (large; the raw pages are always stored)"
+        description: "Crawl: also download each tender's documents (on by default; the raw pages are always stored)"
         type: boolean
-        default: false
+        default: true
       max_items:
         description: "Stop each process after this many windows or count tasks (0 = no limit; 2-5 for a smoke test)"
         default: "0"
