@@ -83,3 +83,14 @@ def test_only_the_organisation_dropdown_counts_as_organisations():
               <select name="OrganName"><option value="0">-Select-</option><option value="3">Buildings and Housing Department</option>
               <option value="7">Rural Development</option></select></form>"""
     assert orgs.parse_options(html) == {"3": "Buildings and Housing Department", "7": "Rural Development"}
+
+
+def test_tender_bundle_ranges_point_at_each_file():
+    import documents
+    files = [("pages.json.gz", b"\x1f\x8b" + b"p" * 1000), ("docs/01_a.pdf", b"%PDF" + b"a" * 5000), ("docs/02_b.xlsx", b"PK" + b"b" * 3)]
+    tar, where = documents.tender_bundle(files)
+    for name, data in files:
+        off, size = where[name]
+        assert tar[off:off + size] == data                      # what a Range request for that slice returns
+        assert documents.bundle_member(tar, name) == data      # and the tar is a normal tar
+    assert len(tar) < sum(len(d) for _, d in files) + 512 * 12

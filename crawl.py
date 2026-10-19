@@ -272,17 +272,19 @@ def crawl_org(hub, item, args, deadline, gate):
                 raise RuntimeError("no details parsed")
             details.pop("pdf_documents", None)
             prefix = documents.tender_prefix(t["tender_id"], org_id)
-            # every fetch gets its own key (never overwrite an earlier capture); the hub keeps earlier keys in details.pages_history
-            pages_path = f"pages/{prefix}__{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}.json.gz"
-            files, entries = [], []
+            # One upload per tender: its pages and documents go into one tar (tenders/<prefix>__<time>.tar; every fetch gets its own key, the
+            # hub keeps earlier keys in details.pages_history). Each file's [offset, bytes] inside the tar is recorded, so one document can
+            # be read later with a Range request. Uploading each file separately made B2 throttle the account (503 SlowDown, 2026-10-20).
+            bundle_path = f"tenders/{prefix}__{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}.tar"
+            members, entries = [], []
             if args.store:
-                files.append((pages_path, documents.pages_bundle(page0, page1, summary_html), "application/gzip"))
+                members.append(("pages.json.gz", documents.pages_bundle(page0, page1, summary_html)))
             for n_doc, (d, content, v, err) in enumerate(fetched, 1):
                 e = {"name": d["name"], "kind": d["kind"], "declared_bytes": d["declared_bytes"]}
                 if v and v["ok"] and args.store:
                     # numbered, so two documents with the same file name on one tender cannot overwrite each other
-                    path = f"docs/{prefix}/{n_doc:02d}_{documents.safe_part(v['filename'])}"
-                    files.append((path, content, documents.MIME.get(v["content_type"], "application/octet-stream")))
+                    path = f"docs/{n_doc:02d}_{documents.safe_part(v['filename'])}"
+                    members.append((path, content))
                     e.update(status="stored", content_type=v["content_type"], bytes=v["bytes"], sha256=v["sha256"], size_ok=v["size_ok"], _path=path)
                     so.bump("doc_stored")
                 elif v:
@@ -310,16 +312,19 @@ def crawl_org(hub, item, args, deadline, gate):
             except Exception as se:
                 details["sections_error"] = f"{type(se).__name__}: {str(se)[:120]}"
             so.bump("t_parse_s", time.perf_counter() - _t_parse)
-            if files:
+            if members:
+                tar, where = documents.tender_bundle(members)
                 with timed("upload"):
-                    uploaded = hub.upload_many(files)
-                done = {u["path"]: u for u in uploaded}   # raises if an upload keeps failing, which fails this tender so it is retried
+                    uploaded = hub.upload_many([(bundle_path, tar, "application/x-tar")])   # raises if it keeps failing: the tender is retried
+                key = uploaded[0]["key"]
+                details["bundle_key"] = key
                 if args.store:
-                    details["pages_key"] = done[pages_path]["key"]
+                    details["pages_key"] = key                         # the tar; the pages are its member pages.json.gz
+                    details["pages_range"] = where["pages.json.gz"]
                     details["fetched_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
                 for e in entries:
                     if e.get("_path"):
-                        e["key"] = done[e["_path"]]["key"]
+                        e.update(key=key, member=e["_path"], range=where[e["_path"]])
             for e in entries:
                 e.pop("_path", None)
             details["documents"] = entries

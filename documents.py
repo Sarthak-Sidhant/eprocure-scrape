@@ -7,6 +7,7 @@ The summary page links several things that are NOT documents:
 Real documents are links whose text is a file name; each document row states its size, e.g. "Document : x.pdf ( 606.33 KB )".
 The BOQ comparative chart is an Excel workbook even though it was saved with a .pdf name.
 """
+import time
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
 import re
@@ -173,6 +174,32 @@ def tender_prefix(tender_id, org_id):
 def pages_bundle(status_html, details_html, summary_html):
     """The tender's three portal pages, gzipped as one JSON file, so every field can be re-parsed later without re-scraping."""
     return gzip.compress(json.dumps({"status": status_html, "details": details_html, "summary": summary_html}).encode("utf-8"), 6)
+
+
+def tender_bundle(members):
+    """One uncompressed tar holding a tender's files, so storing a tender is one upload (B2 throttles an account that makes too many,
+    2026-10-20). members: [(name, bytes)]. Returns (tar bytes, {name: [offset, size]}): each file's bytes sit at that offset in the tar,
+    so a single file can be fetched later with an HTTP Range request (bytes=offset-(offset+size-1)) without downloading the bundle."""
+    import io
+    import tarfile
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as tar:
+        for name, data in members:
+            info = tarfile.TarInfo(name)
+            info.size, info.mtime, info.mode = len(data), int(time.time()), 0o644
+            tar.addfile(info, io.BytesIO(data))
+    out = buf.getvalue()
+    with tarfile.open(fileobj=io.BytesIO(out), mode="r:") as tar:      # read the offsets back: only a read sets offset_data
+        where = {m.name: [m.offset_data, m.size] for m in tar.getmembers()}
+    return out, where
+
+
+def bundle_member(tar_bytes, name):
+    """One file out of a tender bundle (see tender_bundle)."""
+    import io
+    import tarfile
+    with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:") as tar:
+        return tar.extractfile(name).read()
 
 
 PORTAL_ERROR = "portal file service error: generic 'session expired' page, same in a real browser (not a scraper problem)"

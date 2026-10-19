@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 import requests
 from scrape_hub_client import HubClient
 
+import documents
 import sections
 
 PROJECT = "eprocure-sections"
@@ -30,7 +31,8 @@ def fetch_and_parse(record_id, key, url):
         try:
             r = requests.get(url, timeout=60)
             r.raise_for_status()
-            bundle = json.loads(gzip.decompress(r.content))
+            raw = documents.bundle_member(r.content, "pages.json.gz") if key.endswith(".tar") else r.content   # a tender bundle (tar) or old pages file
+            bundle = json.loads(gzip.decompress(raw))
             return record_id, sections.parse_sections(bundle.get("details", ""))
         except Exception:
             time.sleep(1 + attempt)
