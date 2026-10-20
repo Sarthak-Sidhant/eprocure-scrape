@@ -99,13 +99,15 @@ class SessionPool:
                 self.free.append(session)
 
 
-def fetch_pooled(pool, gate, view_link, tender_id, after=None, **kw):
+def fetch_pooled(pool, gate, view_link, tender_id, after=None, hold=None, **kw):
     """fetch_tender_details through a borrowed session; a new one (one captcha) is only made when none is free.
 
     `after(session, out)` runs inside the gate on the same live session, right after the pages were loaded (this is when a
     document link still works). The call then returns (out, after_result) instead of just out.
     """
     with gate:
+        if hold:
+            hold()                                  # paused while this tender waited for its turn: wait here, before any request
         so.thread_local.session = pool.take()      # None makes the scraper authenticate a fresh session
         ok = False
         try:
@@ -142,6 +144,13 @@ def report_document_outcomes(hub, tender_id, org_id, org_name, window, entries):
         elif e["status"] in ("refused", "failed"):
             hub.failure("document", key, e.get("reason") or e["status"], org_id=org_id, org_name=org_name, window=window,
                         document=e["name"], doc_kind=e["kind"], declared_bytes=e["declared_bytes"])
+
+
+def wait_while_paused(hub):
+    """Hold while the dashboard has this project paused (checked again right before each tender's first request: tenders already
+    queued behind the gate when a pause arrives must not go on hitting the portal, 2026-10-20 UP)."""
+    while hub.settings.get("paused"):
+        time.sleep(2)
 
 
 def obey_hub(hub, gate):
@@ -266,7 +275,7 @@ def crawl_org(hub, item, args, deadline, gate):
 
             with sessions:       # uploads and parsing below run outside it, so they overlap the next fetches
                 (details, page0, page1, summary_html), fetched = fetch_pooled(
-                    pool, gate, t.get("view_link"), t["tender_id"], after=collect, org_id=org_id,
+                    pool, gate, t.get("view_link"), t["tender_id"], after=collect, hold=lambda: wait_while_paused(hub), org_id=org_id,
                     output_dir=out_dir, from_date=frm, to_date=to)
             if not details:
                 raise RuntimeError("no details parsed")
